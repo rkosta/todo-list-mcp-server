@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  todo-mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development  # Use development stage from Dockerfile
+    image: todo-mcp-server:dev
+    container_name: todo-mcp-server-dev
+
+    # Environment variables from .env file
+    env_file:
+      - .env
+
+    # Development environment overrides
+    environment:
+      - NODE_ENV=development
+      - DEBUG=*
+      - LOG_LEVEL=debug
+
+    # Mount source code for hot reload
+    volumes:
+      - ./src:/app/src:cached
+      - ./tsconfig.json:/app/tsconfig.json
+      - /app/node_modules  # Prevent host node_modules from overwriting container
+
+    # Port mapping
+    ports:
+      - "3000:3000"   # Auth server port
+      - "9229:9229"   # Node.js debugger port
+
+    # No restart in development (want to see failures immediately)
+    restart: "no"
+
+    # Disable healthcheck in development (faster startup)
+    healthcheck:
+      disable: true
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Database setup service (runs once to initialize schema)
+  setup-db:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development  # Use development stage
+    image: todo-mcp-server:dev
+    container_name: todo-mcp-setup-db-dev
+
+    # Environment variables from .env file
+    env_file:
+      - .env
+
+    # Override default command to run setup-db script
+    command: ["npm", "run", "setup-db"]
+
+    # Run once and exit
+    restart: "no"
+
+    # This service doesn't need port mapping
+    profiles:
+      - setup
+
+networks:
+  default:
+    name: todo-mcp-network-dev
