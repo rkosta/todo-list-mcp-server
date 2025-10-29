@@ -50,14 +50,14 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(session({
-    secret: sessionSecret || 'your_jwt_secret_key',
-    resave: true,
-    saveUninitialized: true,
+    secret: sessionSecret,
+    resave: false,
+    saveUninitialized: false,
     cookie: {
-        secure: false,
+        secure: process.env.NODE_ENV === 'production',
         maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
         httpOnly: true,
-        sameSite: 'lax'
+        sameSite: 'strict'
     }
 }));
 
@@ -66,7 +66,7 @@ const createSessionManager = (req: any, res: express.Response): SessionManager =
         return req.session?.[key];
     },
     setSessionItem: async (key: string, value: any) => {
-        if (!req.session) {
+        if (req.session) {
             req.session[key] = value;
         }
     },

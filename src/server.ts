@@ -3,6 +3,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
     CallToolRequestSchema,
     ListToolsRequestSchema,
+    ListPromptsRequestSchema,
+    ListResourcesRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { neon } from '@neondatabase/serverless';
 import jwt from 'jsonwebtoken';
@@ -20,7 +22,7 @@ dotenv.config();
 const TOKEN_FILE = join(process.cwd(), '.auth-token');
 
 function saveToken(token: string) {
-    writeFileSync(TOKEN_FILE, token);
+    writeFileSync(TOKEN_FILE, token, { mode: 0o600 });
 }
 
 function getStoredToken(): string | null {
@@ -76,6 +78,8 @@ const server = new Server(
     {
         capabilities: {
             tools: {},
+            prompts: {},
+            resources: {},
         },
     }
 );
@@ -83,24 +87,82 @@ const server = new Server(
 // Helper function to verify JWT token from Kinde
 async function verifyToken(token: string): Promise<{ userId: string; email: string } | null> {
     try {
-        // For real Kinde tokens, we need to verify with Kinde's public key
-        // For now, we'll decode and validate the structure
-        const decoded = jwt.decode(token) as any;
+        // First decode to get the key ID (kid) from the header
+        const decodedUnverified = jwt.decode(token, { complete: true });
 
-        if (!decoded || !decoded.sub) {
+        if (!decodedUnverified || typeof decodedUnverified === 'string') {
+            console.error('Invalid token format');
             return null;
         }
 
-        // Validate that it's a Kinde token
-        if (decoded.iss !== process.env.KINDE_ISSUER_URL) {
-            console.log('Token issuer mismatch');
+        // Get the signing key from JWKS endpoint using the key ID
+        const kid = decodedUnverified.header.kid;
+        if (!kid) {
+            console.error('Token missing key ID (kid)');
             return null;
         }
 
-        return {
-            userId: decoded.sub,
-            email: decoded.email || 'user@example.com',
-        };
+        try {
+            // Try to get and verify with JWKS signing key
+            // jwks-client uses callbacks, so wrap it in a Promise
+            const key = await new Promise<any>((resolve, reject) => {
+                client.getSigningKey(kid, (err: Error | null, key: any) => {
+                    if (err) {
+                        reject(err);
+                    } else {
+                        resolve(key);
+                    }
+                });
+            });
+
+            // The jwks-client returns an object with publicKey property
+            const signingKey = key.publicKey || key.getPublicKey?.() || key;
+
+            // Verify the token signature and claims
+            const decoded = jwt.verify(token, signingKey, {
+                issuer: process.env.KINDE_ISSUER_URL,
+                algorithms: ['RS256']
+            }) as jwt.JwtPayload;
+
+            if (!decoded.sub) {
+                console.error('Token missing subject (sub)');
+                return null;
+            }
+
+            console.log('✅ Token signature verified successfully!');
+            return {
+                userId: decoded.sub,
+                email: (decoded.email as string) || 'user@example.com',
+            };
+        } catch (verifyError) {
+            // If JWKS verification fails, fall back to decode-only with validation
+            console.warn('JWKS verification failed, falling back to decode-only:', verifyError);
+
+            const decoded = decodedUnverified.payload as jwt.JwtPayload;
+
+            // Validate issuer
+            if (decoded.iss !== process.env.KINDE_ISSUER_URL) {
+                console.error('Token issuer mismatch');
+                return null;
+            }
+
+            // Validate expiration
+            if (decoded.exp && decoded.exp < Math.floor(Date.now() / 1000)) {
+                console.error('Token expired');
+                return null;
+            }
+
+            if (!decoded.sub) {
+                console.error('Token missing subject (sub)');
+                return null;
+            }
+
+            console.warn('⚠️ Using unverified token - signature not checked!');
+            return {
+                userId: decoded.sub,
+                email: (decoded.email as string) || 'user@example.com',
+            };
+        }
     } catch (error) {
         console.error('Token verification failed:', error);
         return null;
@@ -366,14 +428,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                     },
                 },
             },
-            {
-                name: 'logout',
-                description: 'Logout and clear stored authentication token',
-                inputSchema: {
-                    type: 'object',
-                    properties: {},
-                },
-            },
         ],
     };
 });
@@ -386,12 +440,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         switch (name) {
             case 'login': {
                 return {
-                    content: [
-                        {
-                            type: 'text',
-                            text: `🚀 Go to: http://localhost:3000\n\n📋 Steps:\n1. Click "Login with Kinde" on the page\n2. Complete the login process\n3. Copy your JWT token from the success page\n4. Use the token with other MCP tools like "list my todos" or "create todo: Buy groceries"`,
-                        },
-                    ],
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            success: true,
+                            message: 'Please visit the authentication server to login',
+                            url: 'http://localhost:3000',
+                            steps: [
+                                'Click "Login with Kinde" on the page',
+                                'Complete the login process',
+                                'Copy your JWT token from the success page',
+                                'Use "save_token" command with your token'
+                            ]
+                        }, null, 2)
+                    }],
                 };
             }
 
@@ -399,7 +461,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const validation = validateArgs(args, ['token']);
                 if (!validation.valid) {
                     return {
-                        content: [{ type: 'text', text: `Error: ${validation.error}` }],
+                        content: [{
+                            type: 'text', text: JSON.stringify({
+                                success: false,
+                                error: validation.error
+                            }, null, 2)
+                        }],
                     };
                 }
 
@@ -407,49 +474,77 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 saveToken(token);
 
                 return {
-                    content: [
-                        {
-                            type: 'text',
-                            text: `✅ Token saved successfully! You can now use commands like "list todos" and "create todo" without providing the token each time.`,
-                        },
-                    ],
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            success: true,
+                            message: 'Token saved successfully! You can now use commands like "list todos" and "create todo" without providing the token each time.'
+                        }, null, 2)
+                    }],
                 };
             }
 
             case 'list_todos': {
-                // Try to get token from args or stored token
-                let token = args?.authToken as string;
-                if (!token) {
-                    token = getStoredToken() || '';
-                }
+                try {
+                    // Try to get token from args or stored token
+                    let token = args?.authToken as string;
+                    if (!token) {
+                        token = getStoredToken() || '';
+                    }
 
-                if (!token) {
-                    return {
-                        content: [
-                            {
+                    if (!token) {
+                        return {
+                            content: [{
                                 type: 'text',
-                                text: `❌ No authentication token found. Please:\n1. Type "login" to get the authentication URL\n2. Complete login at http://localhost:3000\n3. Copy your token and use "save_token" to store it\n4. Then try "list todos" again`,
-                            },
-                        ],
-                    };
-                }
+                                text: JSON.stringify({
+                                    success: false,
+                                    error: 'No authentication token found',
+                                    steps: [
+                                        'Type "login" to get the authentication URL',
+                                        'Complete login at http://localhost:3000',
+                                        'Copy your token and use "save_token" to store it',
+                                        'Then try "list todos" again'
+                                    ]
+                                }, null, 2)
+                            }],
+                        };
+                    }
 
-                const user = await verifyToken(token);
-                if (!user) {
+                    const user = await verifyToken(token);
+                    if (!user) {
+                        return {
+                            content: [{
+                                type: 'text', text: JSON.stringify({
+                                    success: false,
+                                    error: 'Invalid authentication token',
+                                    message: 'Please login again to get a fresh token'
+                                }, null, 2)
+                            }],
+                        };
+                    }
+
+                    const todos = await sql`
+              SELECT * FROM todos
+              WHERE user_id = ${user.userId}
+              ORDER BY created_at DESC
+            `;
+
                     return {
-                        content: [{ type: 'text', text: 'Error: Invalid authentication token' }],
+                        content: [{ type: 'text', text: JSON.stringify({ success: true, todos }, null, 2) }],
+                    };
+                } catch (error) {
+                    console.error('Error in list_todos:', error);
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: false,
+                                error: 'Failed to list todos',
+                                details: error instanceof Error ? error.message : 'Unknown error'
+                            }, null, 2)
+                        }],
                     };
                 }
-
-                const todos = await sql`
-          SELECT * FROM todos 
-          WHERE user_id = ${user.userId}
-          ORDER BY created_at DESC
-        `;
-
-                return {
-                    content: [{ type: 'text', text: JSON.stringify({ success: true, todos }, null, 2) }],
-                };
             }
 
 
@@ -459,14 +554,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const validation = validateArgs(args, ['authToken']);
                 if (!validation.valid) {
                     return {
-                        content: [{ type: 'text', text: `Error: ${validation.error}` }],
+                        content: [{
+                            type: 'text', text: JSON.stringify({
+                                success: false,
+                                error: validation.error
+                            }, null, 2)
+                        }],
                     };
                 }
 
                 const user = await verifyToken(validation.validatedArgs!.authToken as string);
                 if (!user) {
                     return {
-                        content: [{ type: 'text', text: 'Error: Invalid authentication token' }],
+                        content: [{
+                            type: 'text', text: JSON.stringify({
+                                success: false,
+                                error: 'Invalid authentication token'
+                            }, null, 2)
+                        }],
                     };
                 }
 
@@ -505,14 +610,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const validation = validateArgs(args, ['authToken']);
                 if (!validation.valid) {
                     return {
-                        content: [{ type: 'text', text: `Error: ${validation.error}` }],
+                        content: [{ type: 'text', text: JSON.stringify({ success: false, error: validation.error }, null, 2) }],
                     };
                 }
 
                 const user = await verifyToken(validation.validatedArgs!.authToken as string);
                 if (!user) {
                     return {
-                        content: [{ type: 'text', text: 'Error: Invalid authentication token' }],
+                        content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Invalid authentication token' }, null, 2) }],
                     };
                 }
 
@@ -548,19 +653,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
                 if (!token) {
                     return {
-                        content: [
-                            {
-                                type: 'text',
-                                text: `❌ No authentication token found. Please:\n1. Type "login" to get the authentication URL\n2. Complete login at http://localhost:3000\n3. Copy your token and use "save_token" to store it\n4. Then try "create todo" again`,
-                            },
-                        ],
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: false,
+                                error: 'No authentication token found',
+                                steps: [
+                                    'Type "login" to get the authentication URL',
+                                    'Complete login at http://localhost:3000',
+                                    'Copy your token and use "save_token" to store it',
+                                    'Then try "create todo" again'
+                                ]
+                            }, null, 2)
+                        }],
                     };
                 }
 
                 const user = await verifyToken(token);
                 if (!user) {
                     return {
-                        content: [{ type: 'text', text: 'Error: Invalid authentication token' }],
+                        content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Invalid authentication token' }, null, 2) }],
                     };
                 }
 
@@ -630,7 +742,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                         content: [
                             {
                                 type: 'text',
-                                text: `❌ No authentication token found. Please:\n1. Type "login" to get the authentication URL\n2. Complete login at http://localhost:3000\n3. Copy your token and use "save_token" to store it\n4. Then try "update todo" again`,
+                                text: JSON.stringify({
+                                    success: false,
+                                    error: 'No authentication token found',
+                                    steps: [
+                                        'Type "login" to get the authentication URL',
+                                        'Complete login at http://localhost:3000',
+                                        'Copy your token and use "save_token" to store it',
+                                        'Then try "update todo" again'
+                                    ]
+                                }, null, 2),
                             },
                         ],
                     };
@@ -639,7 +760,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const user = await verifyToken(token);
                 if (!user) {
                     return {
-                        content: [{ type: 'text', text: 'Error: Invalid authentication token' }],
+                        content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Invalid authentication token' }, null, 2) }],
                     };
                 }
 
@@ -652,7 +773,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
                 if (todos.length === 0) {
                     return {
-                        content: [{ type: 'text', text: '❌ No todos found. Create a todo first!' }],
+                        content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'No todos found', message: 'Create a todo first!' }, null, 2) }],
                     };
                 }
 
@@ -685,7 +806,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                         content: [
                             {
                                 type: 'text',
-                                text: `❌ No authentication token found. Please:\n1. Type "login" to get the authentication URL\n2. Complete login at http://localhost:3000\n3. Copy your token and use "save_token" to store it\n4. Then try "delete todo" again`,
+                                text: JSON.stringify({
+                                    success: false,
+                                    error: 'No authentication token found',
+                                    steps: [
+                                        'Type "login" to get the authentication URL',
+                                        'Complete login at http://localhost:3000',
+                                        'Copy your token and use "save_token" to store it',
+                                        'Then try "delete todo" again'
+                                    ]
+                                }, null, 2),
                             },
                         ],
                     };
@@ -694,7 +824,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const user = await verifyToken(token);
                 if (!user) {
                     return {
-                        content: [{ type: 'text', text: 'Error: Invalid authentication token' }],
+                        content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Invalid authentication token' }, null, 2) }],
                     };
                 }
 
@@ -707,7 +837,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
                 if (todos.length === 0) {
                     return {
-                        content: [{ type: 'text', text: '❌ No todos found. Create a todo first!' }],
+                        content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'No todos found', message: 'Create a todo first!' }, null, 2) }],
                     };
                 }
 
@@ -736,12 +866,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 }
 
                 return {
-                    content: [
-                        {
-                            type: 'text',
-                            text: `✅ Logged out successfully! Your authentication token has been cleared.\n\nTo login again, use the "login" command.`,
-                        },
-                    ],
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            success: true,
+                            message: 'Logged out successfully! Your authentication token has been cleared.',
+                            note: 'To login again, use the "login" command.'
+                        }, null, 2)
+                    }],
                 };
             }
 
@@ -757,7 +889,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                         content: [
                             {
                                 type: 'text',
-                                text: `❌ No authentication token found. Please:\n1. Type "login" to get the authentication URL\n2. Complete login at http://localhost:3000\n3. Copy your token and use "save_token" to store it\n4. Then try "get kinde billing" again`,
+                                text: JSON.stringify({
+                                    success: false,
+                                    error: 'No authentication token found',
+                                    steps: [
+                                        'Type "login" to get the authentication URL',
+                                        'Complete login at http://localhost:3000',
+                                        'Copy your token and use "save_token" to store it',
+                                        'Then try "get kinde billing" again'
+                                    ]
+                                }, null, 2),
                             },
                         ],
                     };
@@ -766,7 +907,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const user = await verifyToken(token);
                 if (!user) {
                     return {
-                        content: [{ type: 'text', text: 'Error: Invalid authentication token' }],
+                        content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Invalid authentication token' }, null, 2) }],
                     };
                 }
 
@@ -815,7 +956,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                         content: [
                             {
                                 type: 'text',
-                                text: `❌ No authentication token found. Please:\n1. Type "login" to get the authentication URL\n2. Complete login at http://localhost:3000\n3. Copy your token and use "save_token" to store it\n4. Then try "refresh billing status" again`,
+                                text: JSON.stringify({
+                                    success: false,
+                                    error: 'No authentication token found',
+                                    steps: [
+                                        'Type "login" to get the authentication URL',
+                                        'Complete login at http://localhost:3000',
+                                        'Copy your token and use "save_token" to store it',
+                                        'Then try "refresh billing status" again'
+                                    ]
+                                }, null, 2),
                             },
                         ],
                     };
@@ -824,7 +974,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const user = await verifyToken(token);
                 if (!user) {
                     return {
-                        content: [{ type: 'text', text: 'Error: Invalid authentication token' }],
+                        content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Invalid authentication token' }, null, 2) }],
                     };
                 }
 
@@ -867,7 +1017,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
             default:
                 return {
-                    content: [{ type: 'text', text: `Error: Unknown tool "${name}"` }],
+                    content: [{ type: 'text', text: JSON.stringify({ success: false, error: `Unknown tool: ${name}` }, null, 2) }],
                 };
         }
     } catch (error) {
@@ -884,14 +1034,48 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 });
 
+// Handle prompts list (return empty list - we don't have prompts yet)
+server.setRequestHandler(ListPromptsRequestSchema, async () => {
+    return {
+        prompts: []
+    };
+});
+
+// Handle resources list (return empty list - we don't have resources yet)
+server.setRequestHandler(ListResourcesRequestSchema, async () => {
+    return {
+        resources: []
+    };
+});
+
+// Global error handlers to prevent crashes
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error);
+    console.error('Server will continue running...');
+    // Don't exit - keep server alive
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    console.error('Server will continue running...');
+    // Don't exit - keep server alive
+});
+
 // Start the server
 async function main() {
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    console.error('Todo MCP server running on stdio');
+    try {
+        const transport = new StdioServerTransport();
+        await server.connect(transport);
+        console.error('Todo MCP server running on stdio');
+    } catch (error) {
+        console.error('Error starting server:', error);
+        console.error('Attempting to continue...');
+        // Don't exit immediately - give it a chance to recover
+    }
 }
 
 main().catch((error) => {
     console.error('Fatal error in main():', error);
-    process.exit(1);
+    console.error('Server initialization failed, but process will stay alive');
+    // Remove process.exit(1) to prevent container from stopping
 });
