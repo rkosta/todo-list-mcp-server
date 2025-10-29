@@ -57,6 +57,12 @@ services:
     env_file:
       - .env
 
+    # Mount source code for live code updates (no rebuild needed)
+    volumes:
+      - ./src:/app/src:cached
+      - ./tsconfig.json:/app/tsconfig.json
+      - /app/node_modules  # Prevent host node_modules from overwriting container
+
     # Override default command to run setup-db script
     command: ["npm", "run", "setup-db"]
 
