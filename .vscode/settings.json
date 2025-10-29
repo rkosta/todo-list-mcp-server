@@ -1,0 +1,4 @@
+{
+  // Disable VS Code auto-attach to prevent conflicts with Docker debugging
+  "debug.javascript.autoAttachFilter": "disabled"
+}
