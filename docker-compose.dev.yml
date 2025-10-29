@@ -28,8 +28,8 @@ services:
       - "3000:3000"   # Auth server port
       - "9229:9229"   # Node.js debugger port
 
-    # No restart in development (want to see failures immediately)
-    restart: "no"
+    # Restart on failure in development (prevents complete crashes)
+    restart: "on-failure:3"  # Restart up to 3 times on failure
 
     # Disable healthcheck in development (faster startup)
     healthcheck:
