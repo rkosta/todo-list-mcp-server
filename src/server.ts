@@ -15,8 +15,8 @@ import { createKindeServerClient, GrantType, SessionManager } from '@kinde-oss/k
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
-// Load environment variables
-dotenv.config();
+// Load environment variables (silent mode to avoid stdout pollution)
+dotenv.config({ debug: false });
 
 // Token storage functions
 const TOKEN_FILE = join(process.cwd(), '.auth-token');
