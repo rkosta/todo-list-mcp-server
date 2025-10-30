@@ -3,7 +3,8 @@ import session from 'express-session';
 import { createKindeServerClient, GrantType, SessionManager } from '@kinde-oss/kinde-typescript-sdk';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
-import { neon } from '@neondatabase/serverless'
+import { neon } from '@neondatabase/serverless';
+import { KindeTokenResponse } from './types/index.js';
 
 
 
@@ -40,9 +41,10 @@ declare module 'express-session' {
     interface SessionData {
         accessToken?: string;
         idToken?: string;
-        userInfo?: any;
+        userInfo?: KindeTokenResponse;
         userName?: string;
         userEmail?: string;
+        [key: string]: unknown;
     }
 }
 
@@ -61,11 +63,11 @@ app.use(session({
     }
 }));
 
-const createSessionManager = (req: any, res: express.Response): SessionManager => ({
+const createSessionManager = (req: express.Request, res: express.Response): SessionManager => ({
     getSessionItem: async (key: string) => {
         return req.session?.[key];
     },
-    setSessionItem: async (key: string, value: any) => {
+    setSessionItem: async (key: string, value: unknown) => {
         if (req.session) {
             req.session[key] = value;
         }
@@ -76,7 +78,9 @@ const createSessionManager = (req: any, res: express.Response): SessionManager =
         }
     },
     destroySession: async () => {
-        req.session = {}
+        Object.keys(req.session).forEach(key => {
+            delete req.session[key as keyof typeof req.session];
+        });
     }
 
 });
@@ -98,7 +102,7 @@ app.get('/', (req, res) => {
         // Use stored user info from session
         const userEmail = req.session?.userEmail || 'user@example.com';
         const userName = req.session?.userName || 'User';
-        console.log('👤 Displaying user:', { userName, userEmail });
+        console.log('Displaying user:', { userName, userEmail });
 
         res.send(`
       <html>
@@ -230,7 +234,7 @@ app.get('/callback', async (req, res) => {
             // Decode the ID token to get user info
             const idToken = tokenData.id_token;
             const user = JSON.parse(Buffer.from(idToken.split('.')[1], 'base64').toString());
-            console.log('👤 User info from ID token:', user);
+            console.log('User info from ID token:', user);
 
             // Store user info in session for easy access
             req.session.userName = user.given_name || user.name || 'User';
@@ -253,7 +257,7 @@ app.get('/callback', async (req, res) => {
                                 INSERT INTO users (user_id, name, email, subscription_status, plan, free_todos_used)
                                 VALUES (${userId}, ${userName}, ${userEmail}, 'free', 'free', 0)
                             `;
-                    console.log('✅ User automatically created in database:', userName, userEmail);
+                    console.log('User automatically created in database:', userName, userEmail);
                 } else {
                     // Update existing user info
                     await sql`
@@ -261,10 +265,10 @@ app.get('/callback', async (req, res) => {
                                 SET name = ${userName}, email = ${userEmail}
                                 WHERE user_id = ${userId}
                             `;
-                    console.log('✅ User info updated in database:', userName, userEmail);
+                    console.log('User info updated in database:', userName, userEmail);
                 }
             } catch (error) {
-                console.log('⚠️ Could not auto-create user in database:', error);
+                console.log('Could not auto-create user in database:', error);
             }
 
             // Redirect to home page after successful authentication

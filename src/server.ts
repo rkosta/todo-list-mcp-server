@@ -14,6 +14,7 @@ import dotenv from 'dotenv';
 import { createKindeServerClient, GrantType, SessionManager } from '@kinde-oss/kinde-typescript-sdk';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { JwksKey, KindeJwtPayload, BillingStatus, ValidationResult, SessionData, SessionValue } from './types/index.js';
 
 // Load environment variables (silent mode to avoid stdout pollution)
 dotenv.config({ debug: false });
@@ -52,14 +53,14 @@ const kindeClient = createKindeServerClient(GrantType.AUTHORIZATION_CODE, {
 });
 
 // Simple session manager for Kinde - use a shared session store
-const sessionStore: Record<string, any> = {};
+const sessionStore: Record<string, SessionData> = {};
 
 const createSessionManager = (): SessionManager => ({
     getSessionItem: async (key: string) => {
         return sessionStore[key] || null;
     },
-    setSessionItem: async (key: string, value: any) => {
-        sessionStore[key] = value;
+    setSessionItem: async (key: string, value: unknown) => {
+        sessionStore[key] = value as SessionData;
     },
     removeSessionItem: async (key: string) => {
         delete sessionStore[key];
@@ -105,8 +106,8 @@ async function verifyToken(token: string): Promise<{ userId: string; email: stri
         try {
             // Try to get and verify with JWKS signing key
             // jwks-client uses callbacks, so wrap it in a Promise
-            const key = await new Promise<any>((resolve, reject) => {
-                client.getSigningKey(kid, (err: Error | null, key: any) => {
+            const key = await new Promise<JwksKey>((resolve, reject) => {
+                client.getSigningKey(kid, (err: Error | null, key: JwksKey) => {
                     if (err) {
                         reject(err);
                     } else {
@@ -116,7 +117,11 @@ async function verifyToken(token: string): Promise<{ userId: string; email: stri
             });
 
             // The jwks-client returns an object with publicKey property
-            const signingKey = key.publicKey || key.getPublicKey?.() || key;
+            const signingKey: string = (key.publicKey || key.getPublicKey?.() || '') as string;
+
+            if (!signingKey) {
+                throw new Error('Unable to get public key from JWKS');
+            }
 
             // Verify the token signature and claims
             const decoded = jwt.verify(token, signingKey, {
@@ -129,7 +134,7 @@ async function verifyToken(token: string): Promise<{ userId: string; email: stri
                 return null;
             }
 
-            console.log('✅ Token signature verified successfully!');
+            // Token signature verified successfully
             return {
                 userId: decoded.sub,
                 email: (decoded.email as string) || 'user@example.com',
@@ -157,7 +162,7 @@ async function verifyToken(token: string): Promise<{ userId: string; email: stri
                 return null;
             }
 
-            console.warn('⚠️ Using unverified token - signature not checked!');
+            console.error('WARNING: Using unverified token - signature not checked!');
             return {
                 userId: decoded.sub,
                 email: (decoded.email as string) || 'user@example.com',
@@ -170,11 +175,20 @@ async function verifyToken(token: string): Promise<{ userId: string; email: stri
 }
 
 // Helper function to get Kinde billing status
-async function getKindeBillingStatus(userId: string, accessToken: string): Promise<{ plan: string; features: any; canCreate: boolean; reason?: string }> {
+async function getKindeBillingStatus(userId: string, accessToken: string): Promise<BillingStatus> {
     try {
         // Decode JWT token to get user information
-        const decoded = jwt.decode(accessToken) as any;
-        console.log('🔍 JWT Token data for user:', userId, 'Decoded:', decoded);
+        const decoded = jwt.decode(accessToken) as KindeJwtPayload | null;
+
+        if (!decoded || !decoded.sub) {
+            return {
+                plan: 'free',
+                features: { maxTodos: 1 },
+                canCreate: false,
+                reason: 'Invalid token'
+            };
+        }
+        // JWT Token decoded for user
 
         // Check local database for free tier usage only
         const subscription = await sql`
@@ -188,7 +202,7 @@ async function getKindeBillingStatus(userId: string, accessToken: string): Promi
         INSERT INTO users (user_id, name, email, subscription_status, plan, free_todos_used)
         VALUES (${userId}, ${decoded.given_name || decoded.name || 'User'}, ${decoded.email || 'user@example.com'}, 'free', 'free', 0)
       `;
-            console.log('👤 New user created:', decoded.given_name || decoded.name, decoded.email);
+            // New user created in database
         }
 
         // Check if user has used all free todos (1 todo limit for testing)
@@ -262,18 +276,20 @@ async function canCreateTodo(userId: string, accessToken?: string): Promise<{ ca
 }
 
 // Helper function to validate arguments
-function validateArgs(args: any, requiredFields: string[]): { valid: boolean; error?: string; validatedArgs?: any } {
-    if (!args) {
+function validateArgs(args: unknown, requiredFields: string[]): ValidationResult {
+    if (!args || typeof args !== 'object') {
         return { valid: false, error: 'Missing arguments' };
     }
 
+    const typedArgs = args as Record<string, unknown>;
+
     for (const field of requiredFields) {
-        if (!args[field]) {
+        if (!(field in typedArgs) || typedArgs[field] === undefined || typedArgs[field] === null) {
             return { valid: false, error: `Missing required field: ${field}` };
         }
     }
 
-    return { valid: true, validatedArgs: args };
+    return { valid: true, validatedArgs: typedArgs };
 }
 
 // List available tools
@@ -426,6 +442,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                             description: 'Authentication token from Kinde (optional if saved)',
                         },
                     },
+                },
+            },
+            {
+                name: 'logout',
+                description: 'Logout and clear stored authentication token',
+                inputSchema: {
+                    type: 'object',
+                    properties: {},
                 },
             },
         ],
@@ -979,7 +1003,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 }
 
                 try {
-                    console.log('🔄 Force refreshing billing status for user:', user.userId);
+                    // Force refreshing billing status
                     const billingStatus = await getKindeBillingStatus(user.userId, token);
 
                     return {
