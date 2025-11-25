@@ -87,7 +87,7 @@ The server implements three MCP capabilities:
    - `list_todos`: Lists user's todos
    - `create_todo`: Creates new todo (respects billing limits)
    - `update_todo`: Updates existing todo by ID
-   - `delete_todo`: Deletes todo by ID
+   - `delete_todo`: Deletes todo by ID (with ownership validation and quota recovery)
    - `get_subscription_status`: Shows plan and usage
    - `upgrade_subscription`: Simulates subscription upgrade
    - `get_kinde_billing`: Fetches billing from Kinde
@@ -141,10 +141,19 @@ The `update_todo` tool demonstrates the conditional update pattern:
 - Validates todo ownership before update
 - Returns error if no fields provided
 
+### Delete Tool Pattern
+
+The `delete_todo` tool ([src/server.ts:938-1034](src/server.ts#L938-L1034)) demonstrates the interactive-with-fallback pattern:
+- Accepts optional `todoId` parameter for direct deletion
+- If `todoId` provided: validates ownership, deletes todo, and decrements `free_todos_used` count
+- If `todoId` NOT provided: lists all todos and prompts user to select one (interactive mode)
+- **Quota recovery**: Decrements `free_todos_used` using `GREATEST(free_todos_used - 1, 0)` to free up a slot for the user
+- This treats the free tier limit as "active todos" rather than "lifetime todos created"
+
 ### Error Handling
 
-- Global error handlers prevent MCP server crashes ([src/server.ts:1102-1112](src/server.ts#L1102-L1112))
-- All tool handlers wrapped in try-catch ([src/server.ts:476-1084](src/server.ts#L476-L1084))
+- Global error handlers prevent MCP server crashes ([src/server.ts:1159-1169](src/server.ts#L1159-L1169))
+- All tool handlers wrapped in try-catch
 - Errors logged to stderr, never cause process exit
 
 ## Environment Configuration
@@ -198,4 +207,5 @@ For debugging with Docker:
 - The authentication server must be running for login flows to work
 - Token persistence allows MCP tools to work after auth server is stopped
 - Free tier limit is set to 1 todo for testing purposes (see `getKindeBillingStatus`)
-- Duplicate `logout` tool at line 464 and 430 should be cleaned up
+- **Quota recovery**: Deleting a todo decrements the user's `free_todos_used` count, allowing them to create another todo
+- Duplicate `logout` tool at lines 434 and 468 should be cleaned up
