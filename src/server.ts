@@ -423,6 +423,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                             type: 'string',
                             description: 'Authentication token from Kinde (optional if saved)',
                         },
+                        todoId: {
+                            type: 'integer',
+                            description: 'Optional id of the todo item to delete',
+                        },
                     },
                 },
             },
@@ -935,9 +939,74 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     };
                 }
 
+                // If todoId is provided, delete the todo
+                if (args?.todoId !== undefined) {
+                    const todoId = Number(args.todoId);
+
+                    // Validate todoId is a valid number
+                    if (isNaN(todoId) || todoId <= 0) {
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: JSON.stringify({
+                                    success: false,
+                                    error: 'Invalid todo ID',
+                                    message: 'Todo ID must be a positive number'
+                                }, null, 2)
+                            }]
+                        };
+                    }
+
+                    // Check if todo exists and belongs to user
+                    const existingTodo = await sql`
+                        SELECT * FROM todos
+                        WHERE id = ${todoId} AND user_id = ${user.userId}
+                    `;
+
+                    if (existingTodo.length === 0) {
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: JSON.stringify({
+                                    success: false,
+                                    error: 'Todo not found or access denied',
+                                    message: 'The todo does not exist or you do not have permission to delete it'
+                                }, null, 2)
+                            }]
+                        };
+                    }
+
+                    // Delete the todo
+                    await sql`
+                        DELETE FROM todos
+                        WHERE id = ${todoId} AND user_id = ${user.userId}
+                    `;
+
+                    // Update user's todo count (decrement to free up a slot)
+                    await sql`
+                        UPDATE users
+                        SET free_todos_used = GREATEST(free_todos_used - 1, 0)
+                        WHERE user_id = ${user.userId}
+                    `;
+
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: true,
+                                message: 'Todo deleted successfully',
+                                deletedTodo: {
+                                    id: existingTodo[0].id,
+                                    title: existingTodo[0].title
+                                }
+                            }, null, 2)
+                        }]
+                    };
+                }
+
                 // Get user's todos to show them
                 const todos = await sql`
-          SELECT * FROM todos 
+          SELECT * FROM todos
           WHERE user_id = ${user.userId}
           ORDER BY created_at DESC
         `;
