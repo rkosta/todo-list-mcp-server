@@ -7,20 +7,17 @@ import {
     ListResourcesRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { neon } from '@neondatabase/serverless';
-import jwt from 'jsonwebtoken';
+import jwt, { Algorithm } from 'jsonwebtoken';
 // @ts-ignore
 import JwksClient from 'jwks-client';
-import dotenv from 'dotenv';
 import { createKindeServerClient, GrantType, SessionManager } from '@kinde-oss/kinde-typescript-sdk';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { JwksKey, KindeJwtPayload, BillingStatus, ValidationResult, SessionData, SessionValue } from './types/index.js';
-
-// Load environment variables (silent mode to avoid stdout pollution)
-dotenv.config({ debug: false });
+import { config } from './config.js';
 
 // Token storage functions
-const TOKEN_FILE = join(process.cwd(), '.auth-token');
+const TOKEN_FILE = join(process.cwd(), config.TOKEN_FILE_PATH);
 
 function saveToken(token: string) {
     writeFileSync(TOKEN_FILE, token, { mode: 0o600 });
@@ -34,22 +31,22 @@ function getStoredToken(): string | null {
 }
 
 // Initialize Neon PostgreSQL
-const sql = neon(process.env.DATABASE_URL!);
+const sql = neon(config.DATABASE_URL);
 
 // Initialize JWKS client for Kinde token verification
 const client = JwksClient({
-    jwksUri: `${process.env.KINDE_ISSUER_URL}/.well-known/jwks.json`,
+    jwksUri: config.KINDE_JWKS_URI,
     cache: true,
-    cacheMaxAge: 600000, // 10 minutes
+    cacheMaxAge: config.JWKS_CACHE_MAX_AGE,
 });
 
 // Create Kinde client for authentication
 const kindeClient = createKindeServerClient(GrantType.AUTHORIZATION_CODE, {
-    authDomain: process.env.KINDE_ISSUER_URL!,
-    clientId: process.env.KINDE_CLIENT_ID!,
-    clientSecret: process.env.KINDE_CLIENT_SECRET!,
-    redirectURL: 'http://localhost:3000/callback',
-    logoutRedirectURL: 'http://localhost:3000',
+    authDomain: config.KINDE_ISSUER_URL,
+    clientId: config.KINDE_CLIENT_ID,
+    clientSecret: config.KINDE_CLIENT_SECRET,
+    redirectURL: config.KINDE_REDIRECT_URL,
+    logoutRedirectURL: config.KINDE_LOGOUT_REDIRECT_URL,
 });
 
 // Simple session manager for Kinde - use a shared session store
@@ -125,8 +122,8 @@ async function verifyToken(token: string): Promise<{ userId: string; email: stri
 
             // Verify the token signature and claims
             const decoded = jwt.verify(token, signingKey, {
-                issuer: process.env.KINDE_ISSUER_URL,
-                algorithms: ['RS256']
+                issuer: config.KINDE_ISSUER_URL,
+                algorithms: [config.JWT_ALGORITHM as Algorithm]
             }) as jwt.JwtPayload;
 
             if (!decoded.sub) {
@@ -146,7 +143,7 @@ async function verifyToken(token: string): Promise<{ userId: string; email: stri
             const decoded = decodedUnverified.payload as jwt.JwtPayload;
 
             // Validate issuer
-            if (decoded.iss !== process.env.KINDE_ISSUER_URL) {
+            if (decoded.iss !== config.KINDE_ISSUER_URL) {
                 console.error('Token issuer mismatch');
                 return null;
             }
@@ -183,7 +180,7 @@ async function getKindeBillingStatus(userId: string, accessToken: string): Promi
         if (!decoded || !decoded.sub) {
             return {
                 plan: 'free',
-                features: { maxTodos: 1 },
+                features: { maxTodos: config.FREE_TIER_TODO_LIMIT },
                 canCreate: false,
                 reason: 'Invalid token'
             };
@@ -205,29 +202,29 @@ async function getKindeBillingStatus(userId: string, accessToken: string): Promi
             // New user created in database
         }
 
-        // Check if user has used all free todos (1 todo limit for testing)
+        // Check if user has used all free todos
         const freeTodosUsed = subscription.length > 0 ? subscription[0].free_todos_used : 0;
 
-        if (freeTodosUsed < 1) {
+        if (freeTodosUsed < config.FREE_TIER_TODO_LIMIT) {
             return {
                 plan: 'free',
-                features: { maxTodos: 1, used: freeTodosUsed },
+                features: { maxTodos: config.FREE_TIER_TODO_LIMIT, used: freeTodosUsed },
                 canCreate: true,
-                reason: `Free tier - ${1 - freeTodosUsed} todo remaining`
+                reason: `Free tier - ${config.FREE_TIER_TODO_LIMIT - freeTodosUsed} todo(s) remaining`
             };
         }
 
         return {
             plan: 'free',
-            features: { maxTodos: 1, used: freeTodosUsed },
+            features: { maxTodos: config.FREE_TIER_TODO_LIMIT, used: freeTodosUsed },
             canCreate: false,
-            reason: 'You have used your free todo. Please upgrade your plan at https://learnflowai.kinde.com/portal to create more todos.'
+            reason: `You have used all ${config.FREE_TIER_TODO_LIMIT} free todos. Please upgrade your plan at https://${config.KINDE_PORTAL_URL}/portal to create more todos.`
         };
     } catch (error) {
         console.error('Error checking Kinde billing:', error);
         return {
             plan: 'free',
-            features: { maxTodos: 1 },
+            features: { maxTodos: config.FREE_TIER_TODO_LIMIT },
             canCreate: false,
             reason: 'Error checking billing status'
         };
@@ -261,13 +258,13 @@ async function canCreateTodo(userId: string, accessToken?: string): Promise<{ ca
             return { canCreate: true };
         }
 
-        if (userSub.free_todos_used < 5) {
+        if (userSub.free_todos_used < config.FREE_TIER_TODO_LIMIT) {
             return { canCreate: true };
         }
 
         return {
             canCreate: false,
-            reason: 'You have used all 5 free todos. Please upgrade to create more todos.'
+            reason: `You have used all ${config.FREE_TIER_TODO_LIMIT} free todos. Please upgrade to create more todos.`
         };
     } catch (error) {
         console.error('Error checking subscription:', error);
@@ -507,7 +504,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                         text: JSON.stringify({
                             success: true,
                             message: 'Please visit the authentication server to login',
-                            url: 'http://localhost:3000',
+                            url: config.AUTH_SERVER_URL,
                             steps: [
                                 'Click "Login with Kinde" on the page',
                                 'Complete the login process',
@@ -563,7 +560,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                                     error: 'No authentication token found',
                                     steps: [
                                         'Type "login" to get the authentication URL',
-                                        'Complete login at http://localhost:3000',
+                                        `Complete login at ${config.AUTH_SERVER_URL}`,
                                         'Copy your token and use "save_token" to store it',
                                         'Then try "list todos" again'
                                     ]
@@ -625,7 +622,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                                 error: 'No authentication token found',
                                 steps: [
                                     'Type "login" to get the authentication URL',
-                                    'Complete login at http://localhost:3000',
+                                    `Complete login at ${config.AUTH_SERVER_URL}`,
                                     'Copy your token and use "save_token" to store it',
                                     'Then try "get todo" again'
                                 ]
@@ -756,7 +753,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                                 status: userSub.subscription_status || 'free',
                                 freeTodosUsed: userSub.free_todos_used || 0,
                                 totalTodosCreated: userSub.total_todos_created || 0,
-                                freeTodosRemaining: Math.max(0, 5 - (userSub.free_todos_used || 0)),
+                                freeTodosRemaining: Math.max(0, config.FREE_TIER_TODO_LIMIT - (userSub.free_todos_used || 0)),
                             }
                         }, null, 2)
                     }],
@@ -817,7 +814,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                                 error: 'No authentication token found',
                                 steps: [
                                     'Type "login" to get the authentication URL',
-                                    'Complete login at http://localhost:3000',
+                                    `Complete login at ${config.AUTH_SERVER_URL}`,
                                     'Copy your token and use "save_token" to store it',
                                     'Then try "create todo" again'
                                 ]
@@ -841,7 +838,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                         return {
                             content: [{
                                 type: 'text',
-                                text: `🚫 You have used up all your free todos.\n\n💳 Upgrade your plan to create more todos:\n🔗 https://learnflowai.kinde.com/portal`
+                                text: `🚫 You have used up all your free todos.\n\n💳 Upgrade your plan to create more todos:\n🔗 https://${config.KINDE_PORTAL_URL}/portal`
                             }],
                         };
                     }
@@ -904,7 +901,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                                     error: 'No authentication token found',
                                     steps: [
                                         'Type "login" to get the authentication URL',
-                                        'Complete login at http://localhost:3000',
+                                        `Complete login at ${config.AUTH_SERVER_URL}`,
                                         'Copy your token and use "save_token" to store it',
                                         'Then try "update todo" again'
                                     ]
@@ -1035,7 +1032,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                                     error: 'No authentication token found',
                                     steps: [
                                         'Type "login" to get the authentication URL',
-                                        'Complete login at http://localhost:3000',
+                                        `Complete login at ${config.AUTH_SERVER_URL}`,
                                         'Copy your token and use "save_token" to store it',
                                         'Then try "delete todo" again'
                                     ]
@@ -1183,7 +1180,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                                     error: 'No authentication token found',
                                     steps: [
                                         'Type "login" to get the authentication URL',
-                                        'Complete login at http://localhost:3000',
+                                        `Complete login at ${config.AUTH_SERVER_URL}`,
                                         'Copy your token and use "save_token" to store it',
                                         'Then try "get kinde billing" again'
                                     ]
@@ -1213,8 +1210,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                                     features: billingStatus.features,
                                     canCreate: billingStatus.canCreate,
                                     reason: billingStatus.reason,
-                                    upgradeUrl: `https://${process.env.KINDE_ISSUER_URL?.replace('https://', '')}/portal`,
-                                    selfServicePortal: `https://${process.env.KINDE_ISSUER_URL?.replace('https://', '')}/portal`
+                                    upgradeUrl: `https://${config.KINDE_PORTAL_URL}/portal`,
+                                    selfServicePortal: `https://${config.KINDE_PORTAL_URL}/portal`
                                 }
                             }, null, 2)
                         }],
@@ -1250,7 +1247,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                                     error: 'No authentication token found',
                                     steps: [
                                         'Type "login" to get the authentication URL',
-                                        'Complete login at http://localhost:3000',
+                                        `Complete login at ${config.AUTH_SERVER_URL}`,
                                         'Copy your token and use "save_token" to store it',
                                         'Then try "refresh billing status" again'
                                     ]
@@ -1282,8 +1279,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                                     features: billingStatus.features,
                                     canCreate: billingStatus.canCreate,
                                     reason: billingStatus.reason,
-                                    upgradeUrl: `https://${process.env.KINDE_ISSUER_URL?.replace('https://', '')}/portal`,
-                                    selfServicePortal: `https://${process.env.KINDE_ISSUER_URL?.replace('https://', '')}/portal`,
+                                    upgradeUrl: `https://${config.KINDE_PORTAL_URL}/portal`,
+                                    selfServicePortal: `https://${config.KINDE_PORTAL_URL}/portal`,
                                     lastChecked: new Date().toISOString()
                                 }
                             }, null, 2)

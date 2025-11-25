@@ -1,14 +1,7 @@
 import { neon } from '@neondatabase/serverless';
-import dotenv from 'dotenv';
+import { config } from './config.js';
 
-dotenv.config();
-
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) {
-    throw new Error('DATABASE_URL is not defined in environment variables');
-}
-
-const sql = neon(databaseUrl);
+const sql = neon(config.DATABASE_URL);
 
 async function setupDatabase() {
     console.log('Setting up database schema...');

@@ -2,40 +2,11 @@ import express from 'express';
 import session from 'express-session';
 import { createKindeServerClient, GrantType, SessionManager } from '@kinde-oss/kinde-typescript-sdk';
 import jwt from 'jsonwebtoken';
-import dotenv from 'dotenv';
 import { neon } from '@neondatabase/serverless';
 import { KindeTokenResponse } from './types/index.js';
+import { config } from './config.js';
 
-
-
-dotenv.config();
-
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) {
-    throw new Error('DATABASE_URL is not defined in environment variables');
-}
-
-const sessionSecret = process.env.JWT_SECRET;
-if (!sessionSecret) {
-    throw new Error('JWT_SECRET is not defined in environment variables');
-}
-
-const kindeIssuerUrl = process.env.KINDE_ISSUER_URL;
-if (!kindeIssuerUrl) {
-    throw new Error('KINDE_ISSUER_URL is not defined in environment variables');
-}
-
-const kindeClientId = process.env.KINDE_CLIENT_ID;
-if (!kindeClientId) {
-    throw new Error('KINDE_CLIENT_ID is not defined in environment variables');
-}
-
-const kindeClientSecret = process.env.KINDE_CLIENT_SECRET;
-if (!kindeClientSecret) {
-    throw new Error('KINDE_CLIENT_SECRET is not defined in environment variables');
-}
-
-const sql = neon(databaseUrl);
+const sql = neon(config.DATABASE_URL);
 
 declare module 'express-session' {
     interface SessionData {
@@ -49,15 +20,15 @@ declare module 'express-session' {
 }
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = config.PORT;
 
 app.use(session({
-    secret: sessionSecret,
+    secret: config.JWT_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
-        secure: process.env.NODE_ENV === 'production',
-        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+        secure: config.NODE_ENV === 'production',
+        maxAge: config.SESSION_MAX_AGE,
         httpOnly: true,
         sameSite: 'strict'
     }
@@ -86,11 +57,11 @@ const createSessionManager = (req: express.Request, res: express.Response): Sess
 });
 
 const kindleClient = createKindeServerClient(GrantType.AUTHORIZATION_CODE, {
-    authDomain: kindeIssuerUrl,
-    clientId: kindeClientId,
-    clientSecret: kindeClientSecret,
-    redirectURL: 'http://localhost:3000/callback',
-    logoutRedirectURL: 'http://localhost:3000',
+    authDomain: config.KINDE_ISSUER_URL,
+    clientId: config.KINDE_CLIENT_ID,
+    clientSecret: config.KINDE_CLIENT_SECRET,
+    redirectURL: config.KINDE_REDIRECT_URL,
+    logoutRedirectURL: config.KINDE_LOGOUT_REDIRECT_URL,
 });
 
 // Home page with login button
@@ -141,7 +112,7 @@ app.get('/', (req, res) => {
             </div>
             
             <h2>💳 Billing Management:</h2>
-            <p><a href="https://learnflowai.kinde.com/portal" target="_blank" class="btn btn-success">🔗 Manage Billing</a></p>
+            <p><a href="https://${config.KINDE_PORTAL_URL}/portal" target="_blank" class="btn btn-success">🔗 Manage Billing</a></p>
             
             <p>
               <a href="/logout" class="btn btn-danger">Logout</a>
@@ -209,15 +180,15 @@ app.get('/callback', async (req, res) => {
             return res.status(400).send('No authorization code received');
         }
 
-        const tokenResponse = await fetch(`${kindeIssuerUrl}/oauth2/token`, {
+        const tokenResponse = await fetch(`${config.KINDE_ISSUER_URL}/oauth2/token`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: new URLSearchParams({
                 grant_type: 'authorization_code',
-                client_id: process.env.KINDE_CLIENT_ID!,
-                client_secret: process.env.KINDE_CLIENT_SECRET!,
+                client_id: config.KINDE_CLIENT_ID,
+                client_secret: config.KINDE_CLIENT_SECRET,
                 code: code,
-                redirect_uri: 'http://localhost:3000/callback',
+                redirect_uri: config.KINDE_REDIRECT_URL,
             }),
         });
 

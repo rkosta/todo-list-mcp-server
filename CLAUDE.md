@@ -157,16 +157,78 @@ The `delete_todo` tool ([src/server.ts:938-1034](src/server.ts#L938-L1034)) demo
 - All tool handlers wrapped in try-catch
 - Errors logged to stderr, never cause process exit
 
-## Environment Configuration
+## Configuration Management
 
-Required environment variables (see [.env.example](.env.example)):
-```
+The project uses a centralized configuration module ([src/config.ts](src/config.ts)) with Zod validation for type-safe environment variable management.
+
+### Configuration Module Features
+
+- **Centralized validation**: All environment variables validated at startup using Zod schemas
+- **Fail-fast behavior**: Process exits immediately with clear error messages if configuration is invalid
+- **Type safety**: TypeScript types inferred from Zod schema for compile-time safety
+- **Computed values**: Derived configuration (URLs, paths) calculated automatically
+- **Single source of truth**: All files import from `src/config.ts` instead of accessing `process.env` directly
+
+### Required Environment Variables
+
+See [.env.example](.env.example) for complete list with examples:
+
+```bash
 DATABASE_URL=postgresql://...          # Neon PostgreSQL connection string
-KINDE_ISSUER_URL=https://...kinde.com  # Kinde domain
+KINDE_ISSUER_URL=https://...kinde.com  # Kinde domain (must be valid URL)
 KINDE_CLIENT_ID=...                     # Kinde OAuth client ID
 KINDE_CLIENT_SECRET=...                 # Kinde OAuth client secret
 JWT_SECRET=...                          # Session secret (generate with crypto.randomBytes)
-NODE_ENV=development|production         # Environment mode
+```
+
+### Optional Environment Variables
+
+All optional variables have sensible defaults:
+
+```bash
+PORT=3000                               # Auth server port (default: 3000)
+NODE_ENV=development                    # Environment mode (default: 'development')
+AUTH_SERVER_URL=http://localhost:3000   # Auth server base URL (default: computed from PORT)
+TOKEN_FILE_PATH=.auth-token             # Token storage path (default: '.auth-token')
+JWKS_CACHE_MAX_AGE=600000               # JWKS cache duration in ms (default: 10 minutes)
+FREE_TIER_TODO_LIMIT=5                  # Free tier todo limit (default: 5)
+SESSION_MAX_AGE=604800000               # Session expiration in ms (default: 7 days)
+JWT_ALGORITHM=RS256                     # JWT signing algorithm (default: 'RS256')
+```
+
+### Computed Configuration
+
+The config module automatically computes derived values:
+
+- `KINDE_REDIRECT_URL`: `${AUTH_SERVER_URL}/callback`
+- `KINDE_LOGOUT_REDIRECT_URL`: `${AUTH_SERVER_URL}`
+- `KINDE_JWKS_URI`: `${KINDE_ISSUER_URL}/.well-known/jwks.json`
+- `KINDE_PORTAL_URL`: Domain extracted from `KINDE_ISSUER_URL` (without https://)
+
+### Usage Example
+
+```typescript
+import { config } from './config.js';
+
+// Access validated configuration
+const sql = neon(config.DATABASE_URL);
+const port = config.PORT;
+
+// All values are type-safe and guaranteed to exist
+```
+
+### Validation Errors
+
+If configuration is invalid, the process exits with a detailed error message:
+
+```
+Configuration validation failed:
+
+  - DATABASE_URL: Required
+  - KINDE_ISSUER_URL: Invalid url
+
+Please check your .env file and ensure all required variables are set.
+See .env.example for reference.
 ```
 
 ## Type Definitions

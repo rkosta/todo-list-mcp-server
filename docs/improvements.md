@@ -138,34 +138,67 @@ This document tracks all improvements identified in the comprehensive TypeScript
 
 ---
 
-## 🔄 Phase 3: Environment & Configuration (PENDING)
+## ✅ Phase 3: Environment & Configuration (COMPLETED)
 
 ### 3.1 Environment Variable Validation
-- **Status**: ⏳ Pending
-- **Location**: `src/server.ts`, `src/kinde-auth-server.ts`, `src/setup-db.ts`
+- **Status**: ✅ Fixed
+- **Location**: `src/config.ts` (NEW FILE)
 - **Issues**:
   - No startup validation for required env vars
   - Processes can start with invalid configuration
   - Runtime failures instead of startup failures
-- **Proposed Solution**:
-  - Create `src/config.ts` with validation
-  - Use zod or similar for schema validation
-  - Validate all required variables at startup
-  - Fail fast with clear error messages
+- **Implementation**:
+  - Created `src/config.ts` with Zod schema validation
+  - Validates all required variables at module import (fail fast)
+  - Clear, actionable error messages with field-level details
+  - Type-safe configuration exports with TypeScript inference
+  - All 3 entry points now import from centralized config module
 
 ### 3.2 Hardcoded Values
-- **Status**: ⏳ Pending
-- **Location**: Multiple files
-- **Issues**:
-  - Port 3000 hardcoded
-  - Database schema 'public' hardcoded
-  - Token filename '.kinde_token' hardcoded
-  - Session secret missing from env vars
-- **Proposed Solution**:
-  - Add `PORT` to .env
-  - Add `DB_SCHEMA` to .env
-  - Add `TOKEN_FILE` to .env
-  - Add `SESSION_SECRET` to .env (currently uses hardcoded 'your-secret-key')
+- **Status**: ✅ Fixed
+- **Location**: Multiple files migrated
+- **Issues Resolved**:
+  - Port 3000 → `config.PORT` (default: 3000, configurable)
+  - localhost:3000 URLs → `config.AUTH_SERVER_URL` (9+ instances replaced)
+  - Portal URLs → `config.KINDE_PORTAL_URL` (4+ instances replaced)
+  - Token filename → `config.TOKEN_FILE_PATH` (default: '.auth-token')
+  - JWKS cache → `config.JWKS_CACHE_MAX_AGE` (default: 600000ms)
+  - Free tier limit → `config.FREE_TIER_TODO_LIMIT` (unified to 5, was inconsistent 1/5)
+  - Session expiration → `config.SESSION_MAX_AGE` (default: 7 days)
+  - JWT algorithm → `config.JWT_ALGORITHM` (default: 'RS256')
+- **Files Modified**:
+  - `src/server.ts`: 54+ changes, removed all `process.env` references
+  - `src/kinde-auth-server.ts`: Removed manual validation, uses config
+  - `src/setup-db.ts`: Simplified to 4 lines, uses config
+  - `.env.example`: Added 8 optional variables with documentation
+  - `CLAUDE.md`: Added comprehensive configuration documentation section
+
+### 3.3 Configuration Module Features
+- **Zod Validation**: Runtime schema validation with detailed error messages
+- **Type Safety**: TypeScript types automatically inferred from Zod schema
+- **Computed Values**: Automatic derivation of redirect URLs, JWKS URIs, portal URLs
+- **Single Source of Truth**: All configuration accessed via `import { config } from './config.js'`
+- **Fail Fast**: Process exits immediately on invalid configuration with clear guidance
+- **Backward Compatible**: All existing environment variables work unchanged
+- **Flexible Defaults**: 8 optional variables with sensible defaults for development
+
+### 3.4 Environment Variables
+**Required (5):**
+- `DATABASE_URL`: PostgreSQL connection string (with URL validation)
+- `KINDE_ISSUER_URL`: Kinde OAuth domain (with URL validation)
+- `KINDE_CLIENT_ID`: OAuth client ID
+- `KINDE_CLIENT_SECRET`: OAuth client secret
+- `JWT_SECRET`: Session encryption secret
+
+**Optional (8 with defaults):**
+- `PORT`: Auth server port (default: 3000)
+- `NODE_ENV`: Environment mode (default: 'development')
+- `AUTH_SERVER_URL`: Auth server base URL (default: computed from PORT)
+- `TOKEN_FILE_PATH`: Token storage path (default: '.auth-token')
+- `JWKS_CACHE_MAX_AGE`: JWKS cache duration (default: 600000ms)
+- `FREE_TIER_TODO_LIMIT`: Free tier limit (default: 5)
+- `SESSION_MAX_AGE`: Session expiration (default: 604800000ms)
+- `JWT_ALGORITHM`: JWT signing algorithm (default: 'RS256')
 
 ---
 
@@ -482,26 +515,28 @@ This document tracks all improvements identified in the comprehensive TypeScript
 ## Priority Recommendations
 
 ### High Priority (Next Phase)
-1. **Environment Variable Validation** (Phase 3.1)
-   - Prevents runtime failures
-   - Easy to implement
-   - High impact on reliability
-
-2. **Code Organization** (Phase 5.1)
+1. **Code Organization** (Phase 5.1)
    - Makes future work easier
    - Improves maintainability
    - Enables better testing
+   - Separates concerns in 1100+ line server.ts
 
-3. **Input Validation** (Phase 4.2)
+2. **Input Validation** (Phase 4.2)
    - Security improvement
    - Better error messages
    - Prevents data corruption
+   - Use Zod schemas for tool arguments
+
+3. **Testing Infrastructure** (Phase 5.3)
+   - Enable confidence in refactoring
+   - Catch regressions early
+   - Document expected behavior
 
 ### Medium Priority
-1. **Testing Infrastructure** (Phase 5.3)
-2. **Database Connection Pooling** (Phase 6.1)
-3. **Rate Limiting** (Phase 7.2)
-4. **Structured Logging** (Phase 8.1)
+1. **Database Connection Pooling** (Phase 6.1)
+2. **Rate Limiting** (Phase 7.2)
+3. **Structured Logging** (Phase 8.1)
+4. **Database Error Handling** (Phase 4.1)
 
 ### Lower Priority (Polish)
 1. **API Documentation** (Phase 9.1)
@@ -513,15 +548,17 @@ This document tracks all improvements identified in the comprehensive TypeScript
 ## Statistics
 
 - **Total Improvements Identified**: 40+
-- **Completed (Phase 1 & 2)**: 13
-- **Pending**: 27+
-- **Completion**: 33%
+- **Completed (Phases 1, 2, & 3)**: 17
+- **Pending**: 23+
+- **Completion**: 42%
 
 ---
 
 ## Notes
 
 - All completed improvements have been tested and verified working
-- Phase 1 and Phase 2 addressed critical bugs and type safety
-- Remaining phases focus on production-readiness, testing, and developer experience
+- **Phase 1** addressed critical security bugs and crash prevention
+- **Phase 2** improved type safety and eliminated 'any' types
+- **Phase 3** centralized configuration with Zod validation and eliminated hardcoded values
+- Remaining phases focus on code organization, testing, performance, and developer experience
 - This document serves as a living roadmap for future development
