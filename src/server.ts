@@ -332,6 +332,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 },
             },
             {
+                name: 'get_todo',
+                description: 'Get detailed information for a specific todo by ID',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        authToken: {
+                            type: 'string',
+                            description: 'Authentication token from Kinde (optional if saved)',
+                        },
+                        todoId: {
+                            type: 'integer',
+                            description: 'ID of the todo item to retrieve',
+                        },
+                    },
+                    required: ['todoId'],
+                },
+            },
+            {
                 name: 'get_subscription_status',
                 description: 'Get the user\'s subscription status and todo usage',
                 inputSchema: {
@@ -591,8 +609,103 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 }
             }
 
+            case 'get_todo': {
+                // Try to get token from args or stored token
+                let token = args?.authToken as string;
+                if (!token) {
+                    token = getStoredToken() || '';
+                }
 
+                if (!token) {
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: false,
+                                error: 'No authentication token found',
+                                steps: [
+                                    'Type "login" to get the authentication URL',
+                                    'Complete login at http://localhost:3000',
+                                    'Copy your token and use "save_token" to store it',
+                                    'Then try "get todo" again'
+                                ]
+                            }, null, 2)
+                        }],
+                    };
+                }
 
+                const user = await verifyToken(token);
+                if (!user) {
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: false,
+                                error: 'Invalid authentication token'
+                            }, null, 2)
+                        }],
+                    };
+                }
+
+                // Validate todoId is provided
+                if (!args?.todoId) {
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: false,
+                                error: 'Missing required parameter',
+                                message: 'Please provide a todoId'
+                            }, null, 2)
+                        }]
+                    };
+                }
+
+                const todoId = Number(args.todoId);
+
+                // Validate todoId is a valid number
+                if (isNaN(todoId) || todoId <= 0) {
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: false,
+                                error: 'Invalid todo ID',
+                                message: 'Todo ID must be a positive number'
+                            }, null, 2)
+                        }]
+                    };
+                }
+
+                // Query todo with ownership validation
+                const todo = await sql`
+                    SELECT * FROM todos
+                    WHERE id = ${todoId} AND user_id = ${user.userId}
+                `;
+
+                if (todo.length === 0) {
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: false,
+                                error: 'Todo not found or access denied',
+                                message: 'The todo does not exist or you do not have permission to view it'
+                            }, null, 2)
+                        }]
+                    };
+                }
+
+                return {
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            success: true,
+                            todo: todo[0]
+                        }, null, 2)
+                    }]
+                };
+            }
 
             case 'get_subscription_status': {
                 const validation = validateArgs(args, ['authToken']);

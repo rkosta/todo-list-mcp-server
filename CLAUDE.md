@@ -85,6 +85,7 @@ The server implements three MCP capabilities:
    - `login`: Returns authentication URL
    - `save_token`: Stores JWT for future use
    - `list_todos`: Lists user's todos
+   - `get_todo`: Retrieves detailed information for a specific todo by ID (requires todoId)
    - `create_todo`: Creates new todo (respects billing limits)
    - `update_todo`: Updates existing todo by ID
    - `delete_todo`: Deletes todo by ID (with ownership validation and quota recovery)
