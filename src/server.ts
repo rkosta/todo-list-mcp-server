@@ -394,6 +394,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                             type: 'string',
                             description: 'Authentication token from Kinde (optional if saved)',
                         },
+                        todoId: {
+                            type: 'integer',
+                            description: 'Optional id of the todo item',
+                        },
+                        title: {
+                            type: 'string',
+                            description: 'Optional title of the todo item',
+                        },
+                        description: {
+                            type: 'string',
+                            description: 'Optional description of the todo item',
+                        },
+                        completed: {
+                            type: 'boolean',
+                            description: 'Optional completion status of the todo',
+                        },
                     },
                 },
             },
@@ -788,34 +804,101 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     };
                 }
 
-                // Get user's todos to show them
-                const todos = await sql`
-          SELECT * FROM todos 
-          WHERE user_id = ${user.userId}
-          ORDER BY created_at DESC
-        `;
+                let todoId = args?.todoId as number;
 
-                if (todos.length === 0) {
+                if (!todoId) {
+                    // If no todoId provided, ask user to select one
+                    
+                    // Get user's todos to show them
+                    const todos = await sql`
+                        SELECT * FROM todos 
+                        WHERE user_id = ${user.userId}
+                        ORDER BY created_at DESC
+                        `;
+
+                    if (todos.length === 0) {
+                        return {
+                            content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'No todos found', message: 'Create a todo first!' }, null, 2) }],
+                        };
+                    }
+
+                    let todoList = '📋 **Your Todos:**\n\n';
+                    todos.forEach((todo, index) => {
+                        todoList += `${index + 1}. **ID: ${todo.id}** - ${todo.title}\n`;
+                        if (todo.description) todoList += `   Description: ${todo.description}\n`;
+                        todoList += `   Status: ${todo.completed ? '✅ Completed' : '⏳ Pending'}\n\n`;
+                    });
+
                     return {
-                        content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'No todos found', message: 'Create a todo first!' }, null, 2) }],
+                        content: [
+                            {
+                                type: 'text',
+                                text: `${todoList}**Which todo would you like to update?**\n\nPlease respond with the todo ID and new details in this format:\n\`\`\`\ntodoId: 1\ntitle: New title (optional)\ndescription: New description (optional)\ncompleted: true (optional)\n\`\`\``,
+                            },
+                        ],
+                    };
+                }
+                else {
+                    // Update the specified todo
+                    // First verify the todo exists and belongs to the user
+                    const existingTodo = await sql`
+                        SELECT * FROM todos
+                        WHERE id = ${todoId} AND user_id = ${user.userId}
+                    `;
+
+                    if (existingTodo.length === 0) {
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: JSON.stringify({
+                                    success: false,
+                                    error: 'Todo not found or access denied'
+                                }, null, 2)
+                            }]
+                        };
+                    }
+
+                    // Check if at least one field is provided for update
+                    const hasTitle = args?.title !== undefined;
+                    const hasDescription = args?.description !== undefined;
+                    const hasCompleted = args?.completed !== undefined;
+
+                    if (!hasTitle && !hasDescription && !hasCompleted) {
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: JSON.stringify({
+                                    success: false,
+                                    error: 'No fields to update',
+                                    message: 'Please provide at least one field to update (title, description, or completed)'
+                                }, null, 2)
+                            }]
+                        };
+                    }
+
+                    // Build the update using conditional values
+                    const updatedTodo = await sql`
+                        UPDATE todos
+                        SET
+                            title = ${hasTitle ? args!.title : existingTodo[0].title},
+                            description = ${hasDescription ? args!.description : existingTodo[0].description},
+                            completed = ${hasCompleted ? args!.completed : existingTodo[0].completed}
+                        WHERE id = ${todoId} AND user_id = ${user.userId}
+                        RETURNING *
+                    `;
+
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: true,
+                                message: 'Todo updated successfully',
+                                todo: updatedTodo[0]
+                            }, null, 2)
+                        }]
                     };
                 }
 
-                let todoList = '📋 **Your Todos:**\n\n';
-                todos.forEach((todo, index) => {
-                    todoList += `${index + 1}. **ID: ${todo.id}** - ${todo.title}\n`;
-                    if (todo.description) todoList += `   Description: ${todo.description}\n`;
-                    todoList += `   Status: ${todo.completed ? '✅ Completed' : '⏳ Pending'}\n\n`;
-                });
-
-                return {
-                    content: [
-                        {
-                            type: 'text',
-                            text: `${todoList}**Which todo would you like to update?**\n\nPlease respond with the todo ID and new details in this format:\n\`\`\`\ntodoId: 1\ntitle: New title (optional)\ndescription: New description (optional)\ncompleted: true (optional)\n\`\`\``,
-                        },
-                    ],
-                };
             }
 
             case 'delete_todo': {
