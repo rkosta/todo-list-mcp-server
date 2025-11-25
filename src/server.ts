@@ -15,6 +15,16 @@ import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { JwksKey, KindeJwtPayload, BillingStatus, ValidationResult, SessionData, SessionValue } from './types/index.js';
 import { config } from './config.js';
+import {
+    validateToolArgs,
+    SaveTokenArgsSchema,
+    GetTodoArgsSchema,
+    DeleteTodoArgsSchema,
+    CreateTodoArgsSchema,
+    UpdateTodoArgsSchema,
+    GetSubscriptionStatusArgsSchema,
+    UpgradeSubscriptionArgsSchema
+} from './validation/index.js';
 
 // Token storage functions
 const TOKEN_FILE = join(process.cwd(), config.TOKEN_FILE_PATH);
@@ -272,23 +282,6 @@ async function canCreateTodo(userId: string, accessToken?: string): Promise<{ ca
     }
 }
 
-// Helper function to validate arguments
-function validateArgs(args: unknown, requiredFields: string[]): ValidationResult {
-    if (!args || typeof args !== 'object') {
-        return { valid: false, error: 'Missing arguments' };
-    }
-
-    const typedArgs = args as Record<string, unknown>;
-
-    for (const field of requiredFields) {
-        if (!(field in typedArgs) || typedArgs[field] === undefined || typedArgs[field] === null) {
-            return { valid: false, error: `Missing required field: ${field}` };
-        }
-    }
-
-    return { valid: true, validatedArgs: typedArgs };
-}
-
 // List available tools
 server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
@@ -517,30 +510,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
 
             case 'save_token': {
-                const validation = validateArgs(args, ['token']);
-                if (!validation.valid) {
+                try {
+                    const validatedArgs = validateToolArgs(SaveTokenArgsSchema, args);
+                    saveToken(validatedArgs.token);
+
                     return {
                         content: [{
-                            type: 'text', text: JSON.stringify({
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: true,
+                                message: 'Token saved successfully! You can now use commands like "list todos" and "create todo" without providing the token each time.'
+                            }, null, 2)
+                        }],
+                    };
+                } catch (error) {
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
                                 success: false,
-                                error: validation.error
+                                error: error instanceof Error ? error.message : 'Validation failed'
                             }, null, 2)
                         }],
                     };
                 }
-
-                const token = validation.validatedArgs!.token as string;
-                saveToken(token);
-
-                return {
-                    content: [{
-                        type: 'text',
-                        text: JSON.stringify({
-                            success: true,
-                            message: 'Token saved successfully! You can now use commands like "list todos" and "create todo" without providing the token each time.'
-                        }, null, 2)
-                    }],
-                };
             }
 
             case 'list_todos': {
@@ -607,294 +600,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
 
             case 'get_todo': {
-                // Try to get token from args or stored token
-                let token = args?.authToken as string;
-                if (!token) {
-                    token = getStoredToken() || '';
-                }
+                try {
+                    // Validate arguments with Zod
+                    const validatedArgs = validateToolArgs(GetTodoArgsSchema, args);
 
-                if (!token) {
-                    return {
-                        content: [{
-                            type: 'text',
-                            text: JSON.stringify({
-                                success: false,
-                                error: 'No authentication token found',
-                                steps: [
-                                    'Type "login" to get the authentication URL',
-                                    `Complete login at ${config.AUTH_SERVER_URL}`,
-                                    'Copy your token and use "save_token" to store it',
-                                    'Then try "get todo" again'
-                                ]
-                            }, null, 2)
-                        }],
-                    };
-                }
-
-                const user = await verifyToken(token);
-                if (!user) {
-                    return {
-                        content: [{
-                            type: 'text',
-                            text: JSON.stringify({
-                                success: false,
-                                error: 'Invalid authentication token'
-                            }, null, 2)
-                        }],
-                    };
-                }
-
-                // Validate todoId is provided
-                if (!args?.todoId) {
-                    return {
-                        content: [{
-                            type: 'text',
-                            text: JSON.stringify({
-                                success: false,
-                                error: 'Missing required parameter',
-                                message: 'Please provide a todoId'
-                            }, null, 2)
-                        }]
-                    };
-                }
-
-                const todoId = Number(args.todoId);
-
-                // Validate todoId is a valid number
-                if (isNaN(todoId) || todoId <= 0) {
-                    return {
-                        content: [{
-                            type: 'text',
-                            text: JSON.stringify({
-                                success: false,
-                                error: 'Invalid todo ID',
-                                message: 'Todo ID must be a positive number'
-                            }, null, 2)
-                        }]
-                    };
-                }
-
-                // Query todo with ownership validation
-                const todo = await sql`
-                    SELECT * FROM todos
-                    WHERE id = ${todoId} AND user_id = ${user.userId}
-                `;
-
-                if (todo.length === 0) {
-                    return {
-                        content: [{
-                            type: 'text',
-                            text: JSON.stringify({
-                                success: false,
-                                error: 'Todo not found or access denied',
-                                message: 'The todo does not exist or you do not have permission to view it'
-                            }, null, 2)
-                        }]
-                    };
-                }
-
-                return {
-                    content: [{
-                        type: 'text',
-                        text: JSON.stringify({
-                            success: true,
-                            todo: todo[0]
-                        }, null, 2)
-                    }]
-                };
-            }
-
-            case 'get_subscription_status': {
-                const validation = validateArgs(args, ['authToken']);
-                if (!validation.valid) {
-                    return {
-                        content: [{
-                            type: 'text', text: JSON.stringify({
-                                success: false,
-                                error: validation.error
-                            }, null, 2)
-                        }],
-                    };
-                }
-
-                const user = await verifyToken(validation.validatedArgs!.authToken as string);
-                if (!user) {
-                    return {
-                        content: [{
-                            type: 'text', text: JSON.stringify({
-                                success: false,
-                                error: 'Invalid authentication token'
-                            }, null, 2)
-                        }],
-                    };
-                }
-
-                const subscription = await sql`
-          SELECT * FROM users 
-          WHERE user_id = ${user.userId}
-        `;
-
-                // If no subscription exists, create one
-                if (subscription.length === 0) {
-                    await sql`
-            INSERT INTO users (user_id, subscription_status, free_todos_used)
-            VALUES (${user.userId}, 'free', 0)
-          `;
-                }
-
-                const userSub = subscription[0] || { subscription_status: 'free', free_todos_used: 0 };
-
-                return {
-                    content: [{
-                        type: 'text',
-                        text: JSON.stringify({
-                            success: true,
-                            subscription: {
-                                status: userSub.subscription_status || 'free',
-                                freeTodosUsed: userSub.free_todos_used || 0,
-                                totalTodosCreated: userSub.total_todos_created || 0,
-                                freeTodosRemaining: Math.max(0, config.FREE_TIER_TODO_LIMIT - (userSub.free_todos_used || 0)),
-                            }
-                        }, null, 2)
-                    }],
-                };
-            }
-
-            case 'upgrade_subscription': {
-                const validation = validateArgs(args, ['authToken']);
-                if (!validation.valid) {
-                    return {
-                        content: [{ type: 'text', text: JSON.stringify({ success: false, error: validation.error }, null, 2) }],
-                    };
-                }
-
-                const user = await verifyToken(validation.validatedArgs!.authToken as string);
-                if (!user) {
-                    return {
-                        content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Invalid authentication token' }, null, 2) }],
-                    };
-                }
-
-                // In a real implementation, you would integrate with a payment processor
-                // For now, we'll simulate the upgrade
-                await sql`
-          INSERT INTO users (user_id, subscription_status, plan)
-          VALUES (${user.userId}, 'active', 'premium')
-          ON CONFLICT (user_id) 
-          DO UPDATE SET 
-            subscription_status = 'active',
-            plan = 'premium'
-        `;
-
-                return {
-                    content: [{
-                        type: 'text',
-                        text: JSON.stringify({
-                            success: true,
-                            message: 'Subscription upgraded successfully! You can now create unlimited todos.',
-                            subscriptionStatus: 'active'
-                        }, null, 2)
-                    }],
-                };
-            }
-
-            case 'create_todo': {
-                // Try to get token from args or stored token
-                let token = args?.authToken as string;
-                if (!token) {
-                    token = getStoredToken() || '';
-                }
-
-                if (!token) {
-                    return {
-                        content: [{
-                            type: 'text',
-                            text: JSON.stringify({
-                                success: false,
-                                error: 'No authentication token found',
-                                steps: [
-                                    'Type "login" to get the authentication URL',
-                                    `Complete login at ${config.AUTH_SERVER_URL}`,
-                                    'Copy your token and use "save_token" to store it',
-                                    'Then try "create todo" again'
-                                ]
-                            }, null, 2)
-                        }],
-                    };
-                }
-
-                const user = await verifyToken(token);
-                if (!user) {
-                    return {
-                        content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Invalid authentication token' }, null, 2) }],
-                    };
-                }
-
-                // If title is provided, create the todo
-                if (args?.title) {
-                    // Check if user can create more todos
-                    const { canCreate, reason } = await canCreateTodo(user.userId);
-                    if (!canCreate) {
-                        return {
-                            content: [{
-                                type: 'text',
-                                text: `🚫 You have used up all your free todos.\n\n💳 Upgrade your plan to create more todos:\n🔗 https://${config.KINDE_PORTAL_URL}/portal`
-                            }],
-                        };
+                    // Try to get token from args or stored token
+                    let token = validatedArgs.authToken;
+                    if (!token) {
+                        token = getStoredToken() || '';
                     }
 
-                    const todoId = await sql`
-            INSERT INTO todos (user_id, title, description, completed)
-            VALUES (${user.userId}, ${args.title as string}, ${args.description as string || null}, ${args.completed as boolean || false})
-            RETURNING id
-          `;
-
-                    // Update user's todo count
-                    await sql`
-            INSERT INTO users (user_id, free_todos_used)
-            VALUES (${user.userId}, 1)
-            ON CONFLICT (user_id) 
-            DO UPDATE SET 
-              free_todos_used = users.free_todos_used + 1
-          `;
-
-                    return {
-                        content: [{
-                            type: 'text',
-                            text: JSON.stringify({
-                                success: true,
-                                todoId: todoId[0].id,
-                                message: 'Todo created successfully',
-                                title: args.title,
-                                description: args.description,
-                                completed: args.completed || false
-                            }, null, 2)
-                        }],
-                    };
-                }
-
-                // If no title provided, ask for details
-                return {
-                    content: [
-                        {
-                            type: 'text',
-                            text: `📝 **Create New Todo**\n\nPlease provide the following details:\n\n1. **Title**: What is the title of your todo?\n2. **Description**: (Optional) What is the description?\n3. **Completed**: (Optional) Is it completed? (true/false)\n\nPlease respond with your answers in this format:\n\`\`\`\ntitle: Your todo title\ndescription: Your description (optional)\ncompleted: false (optional)\n\`\`\``,
-                        },
-                    ],
-                };
-            }
-
-            case 'update_todo': {
-                // Try to get token from args or stored token
-                let token = args?.authToken as string;
-                if (!token) {
-                    token = getStoredToken() || '';
-                }
-
-                if (!token) {
-                    return {
-                        content: [
-                            {
+                    if (!token) {
+                        return {
+                            content: [{
                                 type: 'text',
                                 text: JSON.stringify({
                                     success: false,
@@ -903,32 +621,493 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                                         'Type "login" to get the authentication URL',
                                         `Complete login at ${config.AUTH_SERVER_URL}`,
                                         'Copy your token and use "save_token" to store it',
-                                        'Then try "update todo" again'
+                                        'Then try "get todo" again'
                                     ]
-                                }, null, 2),
+                                }, null, 2)
+                            }],
+                        };
+                    }
+
+                    const user = await verifyToken(token);
+                    if (!user) {
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: JSON.stringify({
+                                    success: false,
+                                    error: 'Invalid authentication token'
+                                }, null, 2)
+                            }],
+                        };
+                    }
+
+                    // Query todo with ownership validation
+                    const todo = await sql`
+                        SELECT * FROM todos
+                        WHERE id = ${validatedArgs.todoId} AND user_id = ${user.userId}
+                    `;
+
+                    if (todo.length === 0) {
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: JSON.stringify({
+                                    success: false,
+                                    error: 'Todo not found or access denied',
+                                    message: 'The todo does not exist or you do not have permission to view it'
+                                }, null, 2)
+                            }]
+                        };
+                    }
+
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: true,
+                                todo: todo[0]
+                            }, null, 2)
+                        }]
+                    };
+                } catch (error) {
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: false,
+                                error: error instanceof Error ? error.message : 'Validation failed'
+                            }, null, 2)
+                        }],
+                    };
+                }
+            }
+
+            case 'get_subscription_status': {
+                try {
+                    const validatedArgs = validateToolArgs(GetSubscriptionStatusArgsSchema, args);
+
+                    const user = await verifyToken(validatedArgs.authToken);
+                    if (!user) {
+                        return {
+                            content: [{
+                                type: 'text', text: JSON.stringify({
+                                    success: false,
+                                    error: 'Invalid authentication token'
+                                }, null, 2)
+                            }],
+                        };
+                    }
+
+                    const subscription = await sql`
+                        SELECT * FROM users
+                        WHERE user_id = ${user.userId}
+                    `;
+
+                    // If no subscription exists, create one
+                    if (subscription.length === 0) {
+                        await sql`
+                            INSERT INTO users (user_id, subscription_status, free_todos_used)
+                            VALUES (${user.userId}, 'free', 0)
+                        `;
+                    }
+
+                    const userSub = subscription[0] || { subscription_status: 'free', free_todos_used: 0 };
+
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: true,
+                                subscription: {
+                                    status: userSub.subscription_status || 'free',
+                                    freeTodosUsed: userSub.free_todos_used || 0,
+                                    totalTodosCreated: userSub.total_todos_created || 0,
+                                    freeTodosRemaining: Math.max(0, config.FREE_TIER_TODO_LIMIT - (userSub.free_todos_used || 0)),
+                                }
+                            }, null, 2)
+                        }],
+                    };
+                } catch (error) {
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: false,
+                                error: error instanceof Error ? error.message : 'Validation failed'
+                            }, null, 2)
+                        }],
+                    };
+                }
+            }
+
+            case 'upgrade_subscription': {
+                try {
+                    // TESTING ONLY - Not for production use
+                    // TODO: Integrate with real payment provider (Stripe, Kinde billing, etc.)
+                    const validatedArgs = validateToolArgs(UpgradeSubscriptionArgsSchema, args);
+
+                    const user = await verifyToken(validatedArgs.authToken);
+                    if (!user) {
+                        return {
+                            content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Invalid authentication token' }, null, 2) }],
+                        };
+                    }
+
+                    // In a real implementation, you would integrate with a payment processor
+                    // For now, we'll simulate the upgrade
+                    await sql`
+                        INSERT INTO users (user_id, subscription_status, plan)
+                        VALUES (${user.userId}, 'active', 'premium')
+                        ON CONFLICT (user_id)
+                        DO UPDATE SET
+                            subscription_status = 'active',
+                            plan = 'premium'
+                    `;
+
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: true,
+                                message: 'Subscription upgraded successfully! You can now create unlimited todos.',
+                                subscriptionStatus: 'active'
+                            }, null, 2)
+                        }],
+                    };
+                } catch (error) {
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: false,
+                                error: error instanceof Error ? error.message : 'Validation failed'
+                            }, null, 2)
+                        }],
+                    };
+                }
+            }
+
+            case 'create_todo': {
+                try {
+                    // Validate arguments with Zod
+                    const validatedArgs = validateToolArgs(CreateTodoArgsSchema, args);
+
+                    // Try to get token from args or stored token
+                    let token = validatedArgs.authToken;
+                    if (!token) {
+                        token = getStoredToken() || '';
+                    }
+
+                    if (!token) {
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: JSON.stringify({
+                                    success: false,
+                                    error: 'No authentication token found',
+                                    steps: [
+                                        'Type "login" to get the authentication URL',
+                                        `Complete login at ${config.AUTH_SERVER_URL}`,
+                                        'Copy your token and use "save_token" to store it',
+                                        'Then try "create todo" again'
+                                    ]
+                                }, null, 2)
+                            }],
+                        };
+                    }
+
+                    const user = await verifyToken(token);
+                    if (!user) {
+                        return {
+                            content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Invalid authentication token' }, null, 2) }],
+                        };
+                    }
+
+                    // If title is provided, create the todo
+                    if (validatedArgs.title) {
+                        // Check if user can create more todos
+                        const { canCreate } = await canCreateTodo(user.userId);
+                        if (!canCreate) {
+                            return {
+                                content: [{
+                                    type: 'text',
+                                    text: `🚫 You have used up all your free todos.\n\n💳 Upgrade your plan to create more todos:\n🔗 https://${config.KINDE_PORTAL_URL}/portal`
+                                }],
+                            };
+                        }
+
+                        const todoId = await sql`
+                            INSERT INTO todos (user_id, title, description, completed)
+                            VALUES (
+                                ${user.userId},
+                                ${validatedArgs.title},
+                                ${validatedArgs.description || null},
+                                ${validatedArgs.completed || false}
+                            )
+                            RETURNING id
+                        `;
+
+                        // Update user's todo count
+                        await sql`
+                            INSERT INTO users (user_id, free_todos_used)
+                            VALUES (${user.userId}, 1)
+                            ON CONFLICT (user_id)
+                            DO UPDATE SET
+                                free_todos_used = users.free_todos_used + 1
+                        `;
+
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: JSON.stringify({
+                                    success: true,
+                                    todoId: todoId[0].id,
+                                    message: 'Todo created successfully',
+                                    title: validatedArgs.title,
+                                    description: validatedArgs.description,
+                                    completed: validatedArgs.completed || false
+                                }, null, 2)
+                            }],
+                        };
+                    }
+
+                    // If no title provided, ask for details (interactive mode)
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: `📝 **Create New Todo**\n\nPlease provide the following details:\n\n1. **Title**: What is the title of your todo?\n2. **Description**: (Optional) What is the description?\n3. **Completed**: (Optional) Is it completed? (true/false)\n\nPlease respond with your answers in this format:\n\`\`\`\ntitle: Your todo title\ndescription: Your description (optional)\ncompleted: false (optional)\n\`\`\``,
                             },
                         ],
                     };
-                }
-
-                const user = await verifyToken(token);
-                if (!user) {
+                } catch (error) {
                     return {
-                        content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Invalid authentication token' }, null, 2) }],
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: false,
+                                error: error instanceof Error ? error.message : 'Validation failed'
+                            }, null, 2)
+                        }],
                     };
                 }
+            }
 
-                let todoId = args?.todoId as number;
+            case 'update_todo': {
+                try {
+                    // Validate arguments with Zod
+                    const validatedArgs = validateToolArgs(UpdateTodoArgsSchema, args);
 
-                if (!todoId) {
-                    // If no todoId provided, ask user to select one
-                    
-                    // Get user's todos to show them
+                    // Try to get token from args or stored token
+                    let token = validatedArgs.authToken;
+                    if (!token) {
+                        token = getStoredToken() || '';
+                    }
+
+                    if (!token) {
+                        return {
+                            content: [
+                                {
+                                    type: 'text',
+                                    text: JSON.stringify({
+                                        success: false,
+                                        error: 'No authentication token found',
+                                        steps: [
+                                            'Type "login" to get the authentication URL',
+                                            `Complete login at ${config.AUTH_SERVER_URL}`,
+                                            'Copy your token and use "save_token" to store it',
+                                            'Then try "update todo" again'
+                                        ]
+                                    }, null, 2),
+                                },
+                            ],
+                        };
+                    }
+
+                    const user = await verifyToken(token);
+                    if (!user) {
+                        return {
+                            content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Invalid authentication token' }, null, 2) }],
+                        };
+                    }
+
+                    if (!validatedArgs.todoId) {
+                        // If no todoId provided, ask user to select one (interactive mode)
+                        const todos = await sql`
+                            SELECT * FROM todos
+                            WHERE user_id = ${user.userId}
+                            ORDER BY created_at DESC
+                        `;
+
+                        if (todos.length === 0) {
+                            return {
+                                content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'No todos found', message: 'Create a todo first!' }, null, 2) }],
+                            };
+                        }
+
+                        let todoList = '📋 **Your Todos:**\n\n';
+                        todos.forEach((todo, index) => {
+                            todoList += `${index + 1}. **ID: ${todo.id}** - ${todo.title}\n`;
+                            if (todo.description) todoList += `   Description: ${todo.description}\n`;
+                            todoList += `   Status: ${todo.completed ? '✅ Completed' : '⏳ Pending'}\n\n`;
+                        });
+
+                        return {
+                            content: [
+                                {
+                                    type: 'text',
+                                    text: `${todoList}**Which todo would you like to update?**\n\nPlease respond with the todo ID and new details in this format:\n\`\`\`\ntodoId: 1\ntitle: New title (optional)\ndescription: New description (optional)\ncompleted: true (optional)\n\`\`\``,
+                                },
+                            ],
+                        };
+                    }
+
+                    // Update the specified todo
+                    // First verify the todo exists and belongs to the user
+                    const existingTodo = await sql`
+                        SELECT * FROM todos
+                        WHERE id = ${validatedArgs.todoId} AND user_id = ${user.userId}
+                    `;
+
+                    if (existingTodo.length === 0) {
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: JSON.stringify({
+                                    success: false,
+                                    error: 'Todo not found or access denied'
+                                }, null, 2)
+                            }]
+                        };
+                    }
+
+                    // Build the update using conditional values
+                    const updatedTodo = await sql`
+                        UPDATE todos
+                        SET
+                            title = ${validatedArgs.title !== undefined ? validatedArgs.title : existingTodo[0].title},
+                            description = ${validatedArgs.description !== undefined ? validatedArgs.description : existingTodo[0].description},
+                            completed = ${validatedArgs.completed !== undefined ? validatedArgs.completed : existingTodo[0].completed}
+                        WHERE id = ${validatedArgs.todoId} AND user_id = ${user.userId}
+                        RETURNING *
+                    `;
+
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: true,
+                                message: 'Todo updated successfully',
+                                todo: updatedTodo[0]
+                            }, null, 2)
+                        }]
+                    };
+                } catch (error) {
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                success: false,
+                                error: error instanceof Error ? error.message : 'Validation failed'
+                            }, null, 2)
+                        }],
+                    };
+                }
+            }
+
+            case 'delete_todo': {
+                try {
+                    // Validate arguments with Zod
+                    const validatedArgs = validateToolArgs(DeleteTodoArgsSchema, args);
+
+                    // Try to get token from args or stored token
+                    let token = validatedArgs.authToken;
+                    if (!token) {
+                        token = getStoredToken() || '';
+                    }
+
+                    if (!token) {
+                        return {
+                            content: [
+                                {
+                                    type: 'text',
+                                    text: JSON.stringify({
+                                        success: false,
+                                        error: 'No authentication token found',
+                                        steps: [
+                                            'Type "login" to get the authentication URL',
+                                            `Complete login at ${config.AUTH_SERVER_URL}`,
+                                            'Copy your token and use "save_token" to store it',
+                                            'Then try "delete todo" again'
+                                        ]
+                                    }, null, 2),
+                                },
+                            ],
+                        };
+                    }
+
+                    const user = await verifyToken(token);
+                    if (!user) {
+                        return {
+                            content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Invalid authentication token' }, null, 2) }],
+                        };
+                    }
+
+                    // If todoId is provided, delete the todo
+                    if (validatedArgs.todoId !== undefined) {
+                        // Check if todo exists and belongs to user
+                        const existingTodo = await sql`
+                            SELECT * FROM todos
+                            WHERE id = ${validatedArgs.todoId} AND user_id = ${user.userId}
+                        `;
+
+                        if (existingTodo.length === 0) {
+                            return {
+                                content: [{
+                                    type: 'text',
+                                    text: JSON.stringify({
+                                        success: false,
+                                        error: 'Todo not found or access denied',
+                                        message: 'The todo does not exist or you do not have permission to delete it'
+                                    }, null, 2)
+                                }]
+                            };
+                        }
+
+                        // Delete the todo
+                        await sql`
+                            DELETE FROM todos
+                            WHERE id = ${validatedArgs.todoId} AND user_id = ${user.userId}
+                        `;
+
+                        // Update user's todo count (decrement to free up a slot)
+                        await sql`
+                            UPDATE users
+                            SET free_todos_used = GREATEST(free_todos_used - 1, 0)
+                            WHERE user_id = ${user.userId}
+                        `;
+
+                        return {
+                            content: [{
+                                type: 'text',
+                                text: JSON.stringify({
+                                    success: true,
+                                    message: 'Todo deleted successfully',
+                                    deletedTodo: {
+                                        id: existingTodo[0].id,
+                                        title: existingTodo[0].title
+                                    }
+                                }, null, 2)
+                            }]
+                        };
+                    }
+
+                    // Get user's todos to show them (interactive mode)
                     const todos = await sql`
-                        SELECT * FROM todos 
+                        SELECT * FROM todos
                         WHERE user_id = ${user.userId}
                         ORDER BY created_at DESC
-                        `;
+                    `;
 
                     if (todos.length === 0) {
                         return {
@@ -947,201 +1126,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                         content: [
                             {
                                 type: 'text',
-                                text: `${todoList}**Which todo would you like to update?**\n\nPlease respond with the todo ID and new details in this format:\n\`\`\`\ntodoId: 1\ntitle: New title (optional)\ndescription: New description (optional)\ncompleted: true (optional)\n\`\`\``,
+                                text: `${todoList}**Which todo would you like to delete?**\n\nPlease respond with the todo ID:\n\`\`\`\ntodoId: 1\n\`\`\``,
                             },
                         ],
                     };
-                }
-                else {
-                    // Update the specified todo
-                    // First verify the todo exists and belongs to the user
-                    const existingTodo = await sql`
-                        SELECT * FROM todos
-                        WHERE id = ${todoId} AND user_id = ${user.userId}
-                    `;
-
-                    if (existingTodo.length === 0) {
-                        return {
-                            content: [{
-                                type: 'text',
-                                text: JSON.stringify({
-                                    success: false,
-                                    error: 'Todo not found or access denied'
-                                }, null, 2)
-                            }]
-                        };
-                    }
-
-                    // Check if at least one field is provided for update
-                    const hasTitle = args?.title !== undefined;
-                    const hasDescription = args?.description !== undefined;
-                    const hasCompleted = args?.completed !== undefined;
-
-                    if (!hasTitle && !hasDescription && !hasCompleted) {
-                        return {
-                            content: [{
-                                type: 'text',
-                                text: JSON.stringify({
-                                    success: false,
-                                    error: 'No fields to update',
-                                    message: 'Please provide at least one field to update (title, description, or completed)'
-                                }, null, 2)
-                            }]
-                        };
-                    }
-
-                    // Build the update using conditional values
-                    const updatedTodo = await sql`
-                        UPDATE todos
-                        SET
-                            title = ${hasTitle ? args!.title : existingTodo[0].title},
-                            description = ${hasDescription ? args!.description : existingTodo[0].description},
-                            completed = ${hasCompleted ? args!.completed : existingTodo[0].completed}
-                        WHERE id = ${todoId} AND user_id = ${user.userId}
-                        RETURNING *
-                    `;
-
+                } catch (error) {
                     return {
                         content: [{
                             type: 'text',
                             text: JSON.stringify({
-                                success: true,
-                                message: 'Todo updated successfully',
-                                todo: updatedTodo[0]
+                                success: false,
+                                error: error instanceof Error ? error.message : 'Validation failed'
                             }, null, 2)
-                        }]
+                        }],
                     };
                 }
-
-            }
-
-            case 'delete_todo': {
-                // Try to get token from args or stored token
-                let token = args?.authToken as string;
-                if (!token) {
-                    token = getStoredToken() || '';
-                }
-
-                if (!token) {
-                    return {
-                        content: [
-                            {
-                                type: 'text',
-                                text: JSON.stringify({
-                                    success: false,
-                                    error: 'No authentication token found',
-                                    steps: [
-                                        'Type "login" to get the authentication URL',
-                                        `Complete login at ${config.AUTH_SERVER_URL}`,
-                                        'Copy your token and use "save_token" to store it',
-                                        'Then try "delete todo" again'
-                                    ]
-                                }, null, 2),
-                            },
-                        ],
-                    };
-                }
-
-                const user = await verifyToken(token);
-                if (!user) {
-                    return {
-                        content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'Invalid authentication token' }, null, 2) }],
-                    };
-                }
-
-                // If todoId is provided, delete the todo
-                if (args?.todoId !== undefined) {
-                    const todoId = Number(args.todoId);
-
-                    // Validate todoId is a valid number
-                    if (isNaN(todoId) || todoId <= 0) {
-                        return {
-                            content: [{
-                                type: 'text',
-                                text: JSON.stringify({
-                                    success: false,
-                                    error: 'Invalid todo ID',
-                                    message: 'Todo ID must be a positive number'
-                                }, null, 2)
-                            }]
-                        };
-                    }
-
-                    // Check if todo exists and belongs to user
-                    const existingTodo = await sql`
-                        SELECT * FROM todos
-                        WHERE id = ${todoId} AND user_id = ${user.userId}
-                    `;
-
-                    if (existingTodo.length === 0) {
-                        return {
-                            content: [{
-                                type: 'text',
-                                text: JSON.stringify({
-                                    success: false,
-                                    error: 'Todo not found or access denied',
-                                    message: 'The todo does not exist or you do not have permission to delete it'
-                                }, null, 2)
-                            }]
-                        };
-                    }
-
-                    // Delete the todo
-                    await sql`
-                        DELETE FROM todos
-                        WHERE id = ${todoId} AND user_id = ${user.userId}
-                    `;
-
-                    // Update user's todo count (decrement to free up a slot)
-                    await sql`
-                        UPDATE users
-                        SET free_todos_used = GREATEST(free_todos_used - 1, 0)
-                        WHERE user_id = ${user.userId}
-                    `;
-
-                    return {
-                        content: [{
-                            type: 'text',
-                            text: JSON.stringify({
-                                success: true,
-                                message: 'Todo deleted successfully',
-                                deletedTodo: {
-                                    id: existingTodo[0].id,
-                                    title: existingTodo[0].title
-                                }
-                            }, null, 2)
-                        }]
-                    };
-                }
-
-                // Get user's todos to show them
-                const todos = await sql`
-          SELECT * FROM todos
-          WHERE user_id = ${user.userId}
-          ORDER BY created_at DESC
-        `;
-
-                if (todos.length === 0) {
-                    return {
-                        content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'No todos found', message: 'Create a todo first!' }, null, 2) }],
-                    };
-                }
-
-                let todoList = '📋 **Your Todos:**\n\n';
-                todos.forEach((todo, index) => {
-                    todoList += `${index + 1}. **ID: ${todo.id}** - ${todo.title}\n`;
-                    if (todo.description) todoList += `   Description: ${todo.description}\n`;
-                    todoList += `   Status: ${todo.completed ? '✅ Completed' : '⏳ Pending'}\n\n`;
-                });
-
-                return {
-                    content: [
-                        {
-                            type: 'text',
-                            text: `${todoList}**Which todo would you like to delete?**\n\nPlease respond with the todo ID:\n\`\`\`\ntodoId: 1\n\`\`\``,
-                        },
-                    ],
-                };
             }
 
             case 'logout': {

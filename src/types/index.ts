@@ -69,3 +69,14 @@ export interface ValidationResult<T = Record<string, unknown>> {
     error?: string;
     validatedArgs?: T;
 }
+
+// Re-export validation argument types from validation module
+export type {
+    SaveTokenArgs,
+    GetTodoArgs,
+    CreateTodoArgs,
+    UpdateTodoArgs,
+    DeleteTodoArgs,
+    GetSubscriptionStatusArgs,
+    UpgradeSubscriptionArgs
+} from '../validation/index.js';
