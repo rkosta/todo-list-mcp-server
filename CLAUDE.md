@@ -231,6 +231,57 @@ Please check your .env file and ensure all required variables are set.
 See .env.example for reference.
 ```
 
+## Input Validation System
+
+The project uses Zod for comprehensive input validation across all tool handlers.
+
+### Validation Module ([src/validation/](src/validation/))
+
+**[src/validation/schemas.ts](src/validation/schemas.ts)**: Zod schemas for all tool arguments
+- `TodoIdSchema`: Positive integer validation
+- `TitleSchema`: 1-255 chars, trimmed, required
+- `DescriptionSchema`: Max 2000 chars, optional
+- `CompletedSchema`: Boolean validation
+- `TokenSchema`: JWT format validation (3 dot-separated parts)
+- Tool-specific schemas: `SaveTokenArgsSchema`, `CreateTodoArgsSchema`, etc.
+
+**[src/validation/index.ts](src/validation/index.ts)**: Validation utilities
+- `validateToolArgs<T>()`: Parse and validate with detailed error messages
+- `safeValidate<T>()`: Non-throwing validation for conditional logic
+- `isValidJWTFormat()`: Basic JWT structure check
+
+### Validation Pattern in Tool Handlers
+
+All tool handlers follow this validation pattern:
+
+```typescript
+case 'tool_name': {
+  try {
+    const validatedArgs = validateToolArgs(ToolArgsSchema, args);
+    // validatedArgs is now type-safe and guaranteed valid
+    // ... tool logic
+  } catch (error) {
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: false,
+          error: error instanceof Error ? error.message : 'Validation failed'
+        }, null, 2)
+      }],
+    };
+  }
+}
+```
+
+### Validation Benefits
+
+- **Runtime type safety**: Validates types at runtime, not just compile-time
+- **Automatic trimming**: Strings are trimmed before validation
+- **Clear error messages**: "Title cannot exceed 255 characters" vs generic errors
+- **Length limits**: Prevents excessively long inputs from reaching database
+- **Format validation**: Ensures JWT tokens have proper structure
+
 ## Type Definitions
 
 All types are centralized in [src/types/index.ts](src/types/index.ts):
@@ -238,7 +289,8 @@ All types are centralized in [src/types/index.ts](src/types/index.ts):
 - `KindeJwtPayload`: Extended JWT payload with Kinde claims
 - `BillingStatus`: Subscription and usage limits
 - `SessionData`: Express session data structure
-- `ValidationResult`: Argument validation results
+- `ValidationResult`: Argument validation results (legacy, being phased out)
+- Validation argument types: `SaveTokenArgs`, `CreateTodoArgs`, etc. (re-exported from validation module)
 
 ## Database Setup
 
@@ -269,6 +321,7 @@ For debugging with Docker:
 - The MCP server runs on stdio (not HTTP) - it cannot be accessed via browser
 - The authentication server must be running for login flows to work
 - Token persistence allows MCP tools to work after auth server is stopped
-- Free tier limit is set to 1 todo for testing purposes (see `getKindeBillingStatus`)
+- Free tier limit defaults to 5 todos (configurable via `FREE_TIER_TODO_LIMIT`)
 - **Quota recovery**: Deleting a todo decrements the user's `free_todos_used` count, allowing them to create another todo
-- Duplicate `logout` tool at lines 434 and 468 should be cleaned up
+- **Validation**: All tool inputs are validated using Zod schemas before processing (Phase 4.2 completed)
+- **Upgrade subscription tool**: Currently a simulation for testing only (see warning comments in code)

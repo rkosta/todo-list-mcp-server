@@ -202,7 +202,7 @@ This document tracks all improvements identified in the comprehensive TypeScript
 
 ---
 
-## 🔄 Phase 4: Error Handling & Validation (PENDING)
+## 🔄 Phase 4: Error Handling & Validation (IN PROGRESS)
 
 ### 4.1 Database Error Handling
 - **Status**: ⏳ Pending
@@ -221,20 +221,31 @@ This document tracks all improvements identified in the comprehensive TypeScript
   - Distinguish between user errors and system errors
 
 ### 4.2 Input Validation
-- **Status**: ⏳ Pending (Partial - validateArgs exists but limited)
-- **Location**: All tool handlers
-- **Issues**:
-  - Basic validation only checks presence, not format
-  - No validation for:
-    - Todo description length
-    - Todo ID format (should be integer)
-    - Boolean values (completed field)
-    - SQL injection patterns
-- **Proposed Solution**:
-  - Use zod schemas for each tool's arguments
-  - Add min/max length validation
-  - Add format validation (email, dates, IDs)
-  - Add sanitization for SQL-sensitive characters
+- **Status**: ✅ Completed
+- **Location**: `src/validation/` (NEW MODULE), All tool handlers
+- **Issues Resolved**:
+  - ✅ Replaced basic validateArgs with comprehensive Zod validation
+  - ✅ Added title validation: 1-255 chars, trimmed, required
+  - ✅ Added description validation: max 2000 chars, optional
+  - ✅ Added TodoId validation: positive integers only
+  - ✅ Added JWT token format validation (3 dot-separated parts)
+  - ✅ Added boolean type validation for completed field
+  - ✅ Automatic whitespace trimming on all string inputs
+- **Implementation**:
+  - Created `src/validation/schemas.ts` with Zod schemas for all tool arguments
+  - Created `src/validation/index.ts` with validation utilities
+  - Updated all 9 tool handlers to use Zod validation:
+    - `save_token`, `get_todo`, `delete_todo` (simple tools)
+    - `create_todo`, `update_todo`, `get_subscription_status`, `upgrade_subscription` (complex tools)
+  - Removed old `validateArgs` function
+  - Added validation type exports to `src/types/index.ts`
+  - All validations provide clear, user-friendly error messages
+- **Benefits**:
+  - Runtime type safety ensures data integrity
+  - Prevents malformed data from reaching database
+  - Clear validation errors: "Title cannot exceed 255 characters"
+  - Automatic sanitization (trimming, type coercion)
+  - Type-safe argument interfaces with full TypeScript inference
 
 ### 4.3 Billing Limit Enforcement
 - **Status**: ⏳ Pending (Partial - check exists but not enforced consistently)
@@ -515,17 +526,17 @@ This document tracks all improvements identified in the comprehensive TypeScript
 ## Priority Recommendations
 
 ### High Priority (Next Phase)
-1. **Code Organization** (Phase 5.1)
-   - Makes future work easier
-   - Improves maintainability
-   - Enables better testing
-   - Separates concerns in 1100+ line server.ts
+1. **Database Error Handling** (Phase 4.1)
+   - Distinguish between error types (connection, constraint, etc.)
+   - Provide actionable error messages to users
+   - Add retry logic for transient failures
+   - Implement transaction support for multi-statement operations
 
-2. **Input Validation** (Phase 4.2)
-   - Security improvement
-   - Better error messages
-   - Prevents data corruption
-   - Use Zod schemas for tool arguments
+2. **Billing Limit Enforcement** (Phase 4.3)
+   - Close security bypass vulnerabilities
+   - Implement atomic quota operations
+   - Add database-level constraints
+   - Add audit logging for quota changes
 
 3. **Testing Infrastructure** (Phase 5.3)
    - Enable confidence in refactoring
@@ -533,10 +544,15 @@ This document tracks all improvements identified in the comprehensive TypeScript
    - Document expected behavior
 
 ### Medium Priority
-1. **Database Connection Pooling** (Phase 6.1)
-2. **Rate Limiting** (Phase 7.2)
-3. **Structured Logging** (Phase 8.1)
-4. **Database Error Handling** (Phase 4.1)
+1. **Code Organization** (Phase 5.1)
+   - Makes future work easier
+   - Improves maintainability
+   - Enables better testing
+   - Separates concerns in 1100+ line server.ts
+
+2. **Database Connection Pooling** (Phase 6.1)
+3. **Rate Limiting** (Phase 7.2)
+4. **Structured Logging** (Phase 8.1)
 
 ### Lower Priority (Polish)
 1. **API Documentation** (Phase 9.1)
@@ -548,9 +564,10 @@ This document tracks all improvements identified in the comprehensive TypeScript
 ## Statistics
 
 - **Total Improvements Identified**: 40+
-- **Completed (Phases 1, 2, & 3)**: 17
-- **Pending**: 23+
-- **Completion**: 42%
+- **Completed (Phases 1, 2, 3, & 4.2)**: 18
+- **In Progress (Phase 4)**: 2 (4.1 and 4.3 pending)
+- **Pending (Phases 5-9)**: 20+
+- **Completion**: 45%
 
 ---
 
@@ -560,5 +577,7 @@ This document tracks all improvements identified in the comprehensive TypeScript
 - **Phase 1** addressed critical security bugs and crash prevention
 - **Phase 2** improved type safety and eliminated 'any' types
 - **Phase 3** centralized configuration with Zod validation and eliminated hardcoded values
-- Remaining phases focus on code organization, testing, performance, and developer experience
+- **Phase 4.2** implemented comprehensive Zod-based input validation across all tool handlers
+- Remaining work in Phase 4 focuses on database error handling and billing enforcement
+- Future phases focus on code organization, testing, performance, and developer experience
 - This document serves as a living roadmap for future development
